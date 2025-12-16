@@ -1,0 +1,5 @@
+telegram-env/
+wallets/
+.claude
+.env
+__pycache__/

@@ -1,0 +1,47 @@
+{
+  "chains": {
+    "SOL": {
+      "enabled": true,
+      "name": "Solana",
+      "symbol": "SOL",
+      "rpc": "https://api.mainnet-beta.solana.com",
+      "decimals": 9,
+      "emoji": "🧬",
+      "wallet_file": "wallets/sol_wallets.json",
+      "coingecko_id": "solana",
+      "dexscreener_chain": "solana"
+    },
+    "ETH": {
+      "enabled": true,
+      "name": "Ethereum",
+      "symbol": "ETH",
+      "rpc": "https://eth.llamarpc.com",
+      "decimals": 18,
+      "emoji": "💎",
+      "wallet_file": "wallets/eth_wallets.json",
+      "coingecko_id": "ethereum",
+      "dexscreener_chain": "ethereum"
+    },
+    "STACKS": {
+      "enabled": false,
+      "name": "Stacks",
+      "symbol": "STX",
+      "rpc": "https://stacks-node-api.mainnet.stacks.co",
+      "decimals": 6,
+      "emoji": "🔶",
+      "wallet_file": "wallets/stacks_wallets.json",
+      "coingecko_id": "blockstack",
+      "dexscreener_chain": null,
+      "import_supported": false
+    }
+  },
+  "settings": {
+    "max_wallets_per_user": 3,
+    "max_wallet_slots_per_user": 3,
+    "allow_wallet_deletion": true,
+    "inter_wallet_transfers_enabled": true,
+    "require_balance_confirmation_on_delete": true,
+    "price_update_interval": 60,
+    "balance_cache_timeout": 30
+  }
+}
