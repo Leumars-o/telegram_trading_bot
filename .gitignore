@@ -3,3 +3,6 @@ wallets/
 .claude
 .env
 __pycache__/
+logs/
+backups/
+*.log
