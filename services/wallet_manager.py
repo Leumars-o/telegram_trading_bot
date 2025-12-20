@@ -82,11 +82,12 @@ class WalletManager:
         bip44_addr_ctx = bip44_chg_ctx.AddressIndex(index)
 
         private_key_bytes = bip44_addr_ctx.PrivateKey().Raw().ToBytes()
-        keypair = Keypair.from_bytes(private_key_bytes[:32])
+        # Use from_seed() for 32-byte seed instead of from_bytes() which expects 64 bytes
+        keypair = Keypair.from_seed(private_key_bytes[:32])
 
         return {
             'address': str(keypair.pubkey()),
-            'private_key': private_key_bytes.hex()
+            'private_key': private_key_bytes[:32].hex()
         }
 
     def _derive_ethereum(self, seed_bytes: bytes, index: int = 0) -> Dict[str, str]:
