@@ -1,0 +1,50 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+telegram-env/
+venv/
+ENV/
+env/
+
+# Git
+.git/
+.gitignore
+.claude/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+README.md
+readmes/
+
+# Backup files
+*.backup
+*.bak
+*.old
+tenex_trading_bot.py
+tenex_alpha_bot.py
+
+# Local development files
+swap_example.py
+
+# Logs (will be in volume)
+*.log
+
+# Don't ignore these - they're needed
+!requirements.txt
+!.env
+!config.json
