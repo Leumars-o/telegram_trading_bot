@@ -135,7 +135,7 @@ function displayHelp() {
   console.log('  node wallet_manager.js scan WALLET_SEED');
   console.log('  node wallet_manager.js scan-solana PHANTOM_SEED -c 20');
   console.log('  node wallet_manager.js generate-stacks WALLET_1 -c 500 -o wallet1.json');
-  console.log('  node wallet_manager.js generate-sol SOL_WALLET -c 100 -n devnet');
+  console.log('  node wallet_manager.js generate-solana SOL_WALLET -c 100 -n devnet');
   console.log('  node wallet_manager.js find wallet1.json -a SP2X0TZ59D5SZ8ACQ6YMCHHNR2ZN51Z32E2CJ173');
   console.log('  node wallet_manager.js transfer-stacks WALLET_1 -c 20');
   console.log('  node wallet_manager.js tx 7EqQdEULxWcraVx3mXKFqRMTL9MHztaQ');
