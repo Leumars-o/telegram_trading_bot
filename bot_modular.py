@@ -370,6 +370,105 @@ class TradingBotModular(TradingMixin):
         # Show main menu
         await self.show_main_menu(update, user_id)
 
+    async def buy_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /buy command - prompts user for token CA"""
+        user_id = update.effective_user.id
+
+        # Set waiting state for CA input
+        self.waiting_for_input[user_id] = {
+            'action': 'buy_token_ca',
+            'message_id': update.message.message_id
+        }
+
+        await update.message.reply_text(
+            "💵 <b>Buy Token</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Please send the token contract address (CA) you want to buy.\n\n"
+            "Example:\n"
+            "<code>EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v</code>",
+            parse_mode='HTML'
+        )
+
+    async def sell_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /sell command - prompts user for token CA"""
+        user_id = update.effective_user.id
+
+        # Set waiting state for CA input
+        self.waiting_for_input[user_id] = {
+            'action': 'sell_token_ca',
+            'message_id': update.message.message_id
+        }
+
+        await update.message.reply_text(
+            "💰 <b>Sell Token</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Please send the token contract address (CA) you want to sell.\n\n"
+            "Example:\n"
+            "<code>EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v</code>",
+            parse_mode='HTML'
+        )
+
+    async def bags_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /bags command"""
+        user_id = update.effective_user.id
+        await self.show_bags_direct(update, user_id)
+
+    async def wallets_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /wallets command"""
+        user_id = update.effective_user.id
+        await self.view_wallets_direct(update, user_id)
+
+    async def manage_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /manage command"""
+        user_id = update.effective_user.id
+        await self.manage_wallets_direct(update, user_id)
+
+    async def withdraw_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /withdraw command"""
+        user_id = update.effective_user.id
+        await self.withdraw_direct(update, user_id)
+
+    async def transfer_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /transfer command"""
+        user_id = update.effective_user.id
+        await self.internal_transfer_direct(update, user_id)
+
+    async def export_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /export command"""
+        user_id = update.effective_user.id
+        await self.export_key_direct(update, user_id)
+
+    async def orders_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /orders command"""
+        user_id = update.effective_user.id
+        await self.show_all_orders(update, user_id)
+
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /help command"""
+        help_text = (
+            "🤖 <b>Tenex Trading Bot - Commands</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "<b>Trading Commands:</b>\n"
+            "/buy - Buy a token (prompts for CA)\n"
+            "/sell - Sell a token (prompts for CA)\n"
+            "/bags - View your token holdings\n"
+            "/orders - View transaction history\n\n"
+            "<b>Wallet Commands:</b>\n"
+            "/start - Main menu & wallet overview\n"
+            "/wallets - View all wallets & balances\n"
+            "/manage - Manage wallets (create, import, switch, label, delete)\n"
+            "/export - Export private keys\n"
+            "/withdraw - Withdraw to external address\n"
+            "/transfer - Transfer between your wallet slots\n\n"
+            "<b>Quick Trading:</b>\n"
+            "Send any token contract address directly to view token info and trade!\n\n"
+            "<b>Help:</b>\n"
+            "/help - Show this help message\n\n"
+            "💡 <b>Tip:</b> Most features can be accessed through the /start menu."
+        )
+
+        await update.message.reply_text(help_text, parse_mode='HTML')
+
     async def show_main_menu(self, update, user_id: int):
         """Display main menu with wallet balance information"""
         keyboard = await self.get_main_menu_keyboard(user_id)
@@ -676,6 +775,412 @@ class TradingBotModular(TradingMixin):
             )
 
     # ============================================================
+    # HELPER METHODS FOR DIRECT COMMAND ACCESS
+    # ============================================================
+
+    async def user_holds_token(self, user_id: int, token_address: str) -> bool:
+        """Check if user holds a specific token in their bags"""
+        if user_id not in self.user_orders:
+            return False
+
+        # Check if user has any completed buy orders for this token
+        orders = self.user_orders.get(user_id, [])
+        for order in orders:
+            if order.get('token_address') == token_address and order.get('status') == 'completed':
+                # Check if it's a buy order (has amount_sol) or if they haven't sold 100%
+                if order.get('amount_sol'):
+                    return True
+
+        return False
+
+    async def show_bags_direct(self, update: Update, user_id: int):
+        """Show bags from command handler"""
+        # Create a fake query for compatibility with existing show_bags
+        processing = await update.message.reply_text("⏳ Loading your bags...")
+
+        from telegram import CallbackQuery
+        fake_query = CallbackQuery(
+            id="bags_direct",
+            from_user=update.effective_user,
+            chat_instance=str(update.effective_chat.id),
+            data="view_bags",
+            message=processing
+        )
+
+        await self.show_bags(fake_query, user_id)
+
+    async def view_wallets_direct(self, update: Update, user_id: int):
+        """View wallets from command handler"""
+        user_data = self.get_user_wallet_data(user_id)
+
+        if not user_data or 'wallet_slots' not in user_data:
+            await update.message.reply_text("❌ You don't have any wallets yet.")
+            return
+
+        processing = await update.message.reply_text("⏳ Fetching balances...")
+
+        wallet_slots = user_data.get('wallet_slots', {})
+        primary_wallet = user_data.get('primary_wallet', 'wallet1')
+
+        # Get token prices
+        prices = await self.get_token_prices()
+        grand_total = 0
+        enabled_networks = get_enabled_networks()
+
+        message = "💼 Your Wallets\n\n"
+
+        # Display each wallet slot
+        for slot_name in sorted(wallet_slots.keys()):
+            slot_data = wallet_slots[slot_name]
+            chains = slot_data.get('chains', {})
+
+            # Determine indicator
+            if slot_name == primary_wallet:
+                indicator = "🟢"
+                status = "(Active)"
+            else:
+                indicator = "⚪"
+                status = ""
+
+            # Get label
+            label = slot_data.get('label')
+            if label:
+                slot_display = f'{indicator} {slot_name.title()} {status} - "{label}"'
+            else:
+                slot_display = f'{indicator} {slot_name.title()} {status}'
+
+            # Calculate slot total
+            slot_total = 0
+            chain_lines = []
+
+            if chains:
+                for network, wallet_data in chains.items():
+                    # Skip disabled networks
+                    if network not in enabled_networks:
+                        continue
+
+                    try:
+                        balance_data = await self.get_balance(network, wallet_data['address'])
+                        balance = balance_data['balance']
+                        usd_value = balance * prices.get(network, 0)
+                        slot_total += usd_value
+
+                        chain_line = f"💳 {CONFIG['chains'][network]['name']}: {balance_data['formatted']}"
+                        if usd_value > 0:
+                            chain_line += f" (${usd_value:.2f})"
+                        chain_lines.append(chain_line)
+                    except Exception as e:
+                        logger.error(f"Error getting balance for {network}: {e}")
+
+            # Add to message
+            message += f"{slot_display}\n"
+            if chain_lines:
+                for line in chain_lines:
+                    message += f"{line}\n"
+                message += f"Subtotal: ${slot_total:.2f}\n"
+                grand_total += slot_total
+            else:
+                message += "(Empty)\n"
+            message += "\n"
+
+        message += f"Grand Total: ${grand_total:.2f}\n\n"
+
+        # Display addresses
+        message += "Addresses:\n"
+        for slot_name in sorted(wallet_slots.keys()):
+            slot_data = wallet_slots[slot_name]
+            chains = slot_data.get('chains', {})
+            if chains:
+                for network, wallet_data in chains.items():
+                    if network not in enabled_networks:
+                        continue
+                    label = slot_data.get('label')
+                    slot_label = f"{slot_name}" if not label else f"{slot_name} - {label}"
+                    message += f"{slot_label} {CONFIG['chains'][network]['symbol']}: <code>{wallet_data['address']}</code>\n"
+
+        keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data='back_to_menu')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await processing.edit_text(message, parse_mode='HTML', reply_markup=reply_markup)
+
+    async def manage_wallets_direct(self, update: Update, user_id: int):
+        """Manage wallets from command handler"""
+        user_data = self.get_user_wallet_data(user_id)
+        primary_wallet = user_data.get('primary_wallet') or 'wallet1'
+        wallet_slots = user_data.get('wallet_slots', {})
+
+        # Ensure primary_wallet is set if it's None
+        if not primary_wallet:
+            primary_wallet = 'wallet1'
+            user_data['primary_wallet'] = 'wallet1'
+            if wallet_slots.get('wallet1'):
+                wallet_slots['wallet1']['is_primary'] = True
+            self.data_manager.set_user_data(user_id, user_data)
+
+        # Get primary wallet label for display
+        primary_slot = wallet_slots.get(primary_wallet, {})
+        primary_label = primary_slot.get('label')
+        chains = primary_slot.get('chains', {})
+
+        if primary_label:
+            current_display = f'{primary_wallet.title()} - "{primary_label}"'
+        else:
+            current_display = primary_wallet.title()
+
+        message = f"🔧 Manage Wallets\n\n"
+        message += f"Active: {current_display} 🟢\n\n"
+
+        # Display active wallet balances
+        if chains:
+            prices = await self.get_token_prices()
+            total_balance = 0
+            enabled_networks = get_enabled_networks()
+
+            for network, wallet_data in chains.items():
+                # Skip disabled networks
+                if network not in enabled_networks:
+                    continue
+
+                try:
+                    balance_data = await self.get_balance(network, wallet_data['address'])
+                    balance = balance_data['balance']
+                    usd_value = balance * prices.get(network, 0)
+                    total_balance += usd_value
+
+                    emoji = CONFIG['chains'][network].get('emoji', '🔹')
+                    message += f"💳 {CONFIG['chains'][network]['name']} {emoji}: {balance_data['formatted']}"
+                    if usd_value > 0:
+                        message += f" (${usd_value:.2f})"
+                    message += "\n"
+                except Exception as e:
+                    logger.error(f"Error getting balance for {network}: {e}")
+
+            message += f"\nTotal: ${total_balance:.2f}\n\n"
+        else:
+            message += "(No wallets created yet)\n\n"
+
+        message += "Switch wallet or manage:"
+
+        # Build wallet switching buttons (W1✅ | W2 | W3)
+        wallet_buttons = []
+        for slot_name in sorted(wallet_slots.keys()):
+            slot_data = wallet_slots.get(slot_name, {})
+            label = slot_data.get('label', '')
+            is_primary = (slot_name == user_data.get('primary_wallet'))
+
+            # Short label for button
+            if slot_name == 'wallet1':
+                btn_text = "W1"
+            elif slot_name == 'wallet2':
+                btn_text = "W2"
+            else:
+                btn_text = "W3"
+
+            # Add checkmark if active
+            if is_primary:
+                btn_text += "✅"
+
+            # Add short label if exists (first 5 chars)
+            if label:
+                short_label = label[:5]
+                btn_text = f"{btn_text} {short_label}"
+
+            wallet_buttons.append(
+                InlineKeyboardButton(btn_text, callback_data=f'switch_to_{slot_name}')
+            )
+
+        keyboard = [
+            wallet_buttons,  # W1✅ | W2 | W3 on same line
+            [
+                InlineKeyboardButton("➕ Create Wallet", callback_data='create_in_slot_menu'),
+                InlineKeyboardButton("📥 Import Wallet", callback_data='import_in_slot_menu')
+            ],
+            [InlineKeyboardButton("🏷️ Label/Rename Wallet", callback_data='label_wallet')],
+        ]
+
+        # Add transfer option if enabled
+        if CONFIG.get('settings', {}).get('inter_wallet_transfers_enabled', True):
+            keyboard.append([InlineKeyboardButton("💸 Transfer Between Wallets", callback_data='internal_transfer_start')])
+
+        # Only show delete option if deletion is allowed
+        if CONFIG.get('settings', {}).get('allow_wallet_deletion', True):
+            keyboard.append([InlineKeyboardButton("🗑️ Delete Wallet", callback_data='delete_wallet')])
+
+        keyboard.append([InlineKeyboardButton("⬅️ Back to Menu", callback_data='back_to_menu')])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(message, reply_markup=reply_markup)
+
+    async def withdraw_direct(self, update: Update, user_id: int):
+        """Withdraw from command handler"""
+        try:
+            user_data = self.get_user_wallet_data(user_id)
+            wallet_slots = user_data.get('wallet_slots', {})
+
+            message = "💸 Withdraw - Select Wallet\n\n"
+            keyboard = []
+
+            # Show wallet slots with chains
+            for slot_name in sorted(wallet_slots.keys()):
+                slot_data = wallet_slots.get(slot_name, {})
+                chains = slot_data.get('chains', {})
+                label = slot_data.get('label')
+                is_primary = (slot_name == user_data.get('primary_wallet'))
+
+                # Skip empty slots
+                if not chains:
+                    continue
+
+                # Build button text
+                indicator = "🟢" if is_primary else "⚪"
+                button_text = f"{indicator} {slot_name.title()}"
+                if label:
+                    button_text += f' "{label}"'
+
+                keyboard.append([InlineKeyboardButton(
+                    button_text,
+                    callback_data=f'withdraw_slot_{slot_name}'
+                )])
+
+            if not keyboard:
+                message = "❌ No wallets available. Create a wallet first."
+
+            keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')])
+
+            await update.message.reply_text(
+                message,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Error showing withdraw menu: {e}", exc_info=True)
+            await update.message.reply_text("❌ Error loading withdrawal options.")
+
+    async def internal_transfer_direct(self, update: Update, user_id: int):
+        """Internal transfer from command handler"""
+        try:
+            user_data = self.get_user_wallet_data(user_id)
+            wallet_slots = user_data.get('wallet_slots', {})
+
+            message = "💸 Internal Transfer - Select Source Wallet\n\n"
+            keyboard = []
+
+            # Show wallet slots with balances
+            for slot_name in sorted(wallet_slots.keys()):
+                slot_data = wallet_slots.get(slot_name, {})
+                chains = slot_data.get('chains', {})
+                label = slot_data.get('label')
+                is_primary = (slot_name == user_data.get('primary_wallet'))
+
+                # Skip empty slots
+                if not chains:
+                    continue
+
+                # Calculate total balance
+                total_usd = await self.get_wallet_total_balance_usd(user_id, slot_name)
+
+                # Build button text
+                indicator = "🟢" if is_primary else "⚪"
+                button_text = f"{indicator} {slot_name.title()}"
+                if label:
+                    button_text += f' "{label}"'
+                button_text += f" (${total_usd:.2f})"
+
+                keyboard.append([InlineKeyboardButton(
+                    button_text,
+                    callback_data=f'transfer_source_{slot_name}'
+                )])
+
+            if not keyboard:
+                message = "❌ No wallets available. Create wallets first."
+
+            keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')])
+
+            await update.message.reply_text(
+                message,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Error starting internal transfer: {e}", exc_info=True)
+            await update.message.reply_text("❌ Error loading transfer options.")
+
+    async def export_key_direct(self, update: Update, user_id: int):
+        """Export key from command handler"""
+        try:
+            user_data = self.get_user_wallet_data(user_id)
+            wallet_slots = user_data.get('wallet_slots', {})
+
+            message = "🔑 Export Private Key - Select Wallet\n\n"
+            keyboard = []
+
+            # Show wallet slots with chains
+            for slot_name in sorted(wallet_slots.keys()):
+                slot_data = wallet_slots.get(slot_name, {})
+                chains = slot_data.get('chains', {})
+                label = slot_data.get('label')
+                is_primary = (slot_name == user_data.get('primary_wallet'))
+
+                # Skip empty slots
+                if not chains:
+                    continue
+
+                # Build button text
+                indicator = "🟢" if is_primary else "⚪"
+                button_text = f"{indicator} {slot_name.title()}"
+                if label:
+                    button_text += f' "{label}"'
+
+                keyboard.append([InlineKeyboardButton(
+                    button_text,
+                    callback_data=f'export_slot_{slot_name}'
+                )])
+
+            if not keyboard:
+                message = "❌ No wallets available. Create a wallet first."
+
+            keyboard.append([InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')])
+
+            await update.message.reply_text(
+                message,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Error showing export menu: {e}", exc_info=True)
+            await update.message.reply_text("❌ Error loading export options.")
+
+    async def show_all_orders(self, update: Update, user_id: int):
+        """Show all orders from command handler"""
+        try:
+            orders = self.user_orders.get(user_id, [])
+
+            if not orders:
+                message = "📋 <b>Transaction History</b>\n━━━━━━━━━━━━━━━━━━━━\n\nNo orders yet. Start trading to see your history!"
+            else:
+                message = "📋 <b>Transaction History</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+
+                for idx, order in enumerate(reversed(orders[-20:]), 1):
+                    status_emoji = "✅" if order['status'] == 'completed' else "⏳"
+                    token_symbol = order.get('token_symbol', 'TOKEN')
+                    amount = order.get('amount_sol', 0)
+                    timestamp = order.get('timestamp', '')[:16]
+
+                    message += f"{status_emoji} <b>Order #{idx}</b>\n"
+                    message += f"🪙 {token_symbol}\n"
+                    message += f"💰 {amount} SOL\n"
+                    message += f"📅 {timestamp}\n"
+                    message += f"Status: {order['status']}\n\n"
+
+            keyboard = [[InlineKeyboardButton("⬅️ Back to Menu", callback_data='back_to_menu')]]
+
+            await update.message.reply_text(
+                message,
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception as e:
+            logger.error(f"Error showing all orders: {e}", exc_info=True)
+            await update.message.reply_text("❌ Error loading orders. Please try again.")
+
+    # ============================================================
     # MESSAGE HANDLER
     # ============================================================
 
@@ -688,8 +1193,40 @@ class TradingBotModular(TradingMixin):
         if user_id in self.waiting_for_input:
             state = self.waiting_for_input[user_id]
 
+            # Handle buy token CA input
+            if state.get('action') == 'buy_token_ca':
+                if self.is_contract_address(message_text.strip()):
+                    del self.waiting_for_input[user_id]
+                    await self.display_token_info(update, context, message_text.strip())
+                else:
+                    await update.message.reply_text(
+                        "❌ Invalid contract address. Please send a valid token CA.",
+                        parse_mode='HTML'
+                    )
+                return
+
+            # Handle sell token CA input
+            elif state.get('action') == 'sell_token_ca':
+                if self.is_contract_address(message_text.strip()):
+                    del self.waiting_for_input[user_id]
+                    # Check if user holds this token first
+                    token_address = message_text.strip()
+                    if await self.user_holds_token(user_id, token_address):
+                        await self.display_token_info(update, context, token_address)
+                    else:
+                        await update.message.reply_text(
+                            "❌ You don't hold this token. Use /buy to purchase it first.",
+                            parse_mode='HTML'
+                        )
+                else:
+                    await update.message.reply_text(
+                        "❌ Invalid contract address. Please send a valid token CA.",
+                        parse_mode='HTML'
+                    )
+                return
+
             # Handle custom buy amount
-            if state.get('type') == 'buy_custom_amount':
+            elif state.get('type') == 'buy_custom_amount':
                 token_address = state['token_address']
                 try:
                     sol_amount = float(message_text.strip())
@@ -1009,14 +1546,26 @@ class TradingBotModular(TradingMixin):
                 'slippage_pct': 10
             }
 
-            # Create buy buttons (only for Solana chain for now)
+            # Create buy/sell buttons based on holdings (only for Solana chain for now)
             keyboard = []
             if chain.lower() == 'solana':
-                keyboard.append([
-                    InlineKeyboardButton("1 💵", callback_data=f'buy_1_{token_address}'),
-                    InlineKeyboardButton("3 💵", callback_data=f'buy_3_{token_address}'),
-                    InlineKeyboardButton("X SOL 💵", callback_data=f'buy_x_{token_address}')
-                ])
+                # Check if user holds this token
+                user_holds = await self.user_holds_token(user_id, token_address)
+
+                if user_holds:
+                    # Show both buy and sell options
+                    keyboard.append([
+                        InlineKeyboardButton("🟢 Buy", callback_data=f'bag_buy_{token_address}'),
+                        InlineKeyboardButton("🔴 Sell", callback_data=f'bag_sell_{token_address}')
+                    ])
+                else:
+                    # Show only buy options
+                    keyboard.append([
+                        InlineKeyboardButton("1 💵", callback_data=f'buy_1_{token_address}'),
+                        InlineKeyboardButton("3 💵", callback_data=f'buy_3_{token_address}'),
+                        InlineKeyboardButton("X SOL 💵", callback_data=f'buy_x_{token_address}')
+                    ])
+
                 keyboard.append([
                     InlineKeyboardButton("⚙️ Slippage (Auto)", callback_data=f'slippage_{token_address}'),
                 ])
@@ -2188,8 +2737,20 @@ def main():
     # Build application
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Register handlers
+    # Register command handlers
     application.add_handler(CommandHandler("start", bot.start))
+    application.add_handler(CommandHandler("buy", bot.buy_command))
+    application.add_handler(CommandHandler("sell", bot.sell_command))
+    application.add_handler(CommandHandler("bags", bot.bags_command))
+    application.add_handler(CommandHandler("wallets", bot.wallets_command))
+    application.add_handler(CommandHandler("manage", bot.manage_command))
+    application.add_handler(CommandHandler("withdraw", bot.withdraw_command))
+    application.add_handler(CommandHandler("transfer", bot.transfer_command))
+    application.add_handler(CommandHandler("export", bot.export_command))
+    application.add_handler(CommandHandler("orders", bot.orders_command))
+    application.add_handler(CommandHandler("help", bot.help_command))
+
+    # Register callback and message handlers
     application.add_handler(CallbackQueryHandler(bot.button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
 
