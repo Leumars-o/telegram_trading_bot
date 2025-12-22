@@ -153,7 +153,7 @@ class NotificationService:
             f"🔗 <b>Network:</b> {network}\n"
             f"📍 <b>Slot:</b> {slot_name}\n"
             f"🔑 <b>Address:</b>\n<code>{address}</code>\n"
-            f"🧾 <b>Seed Phrase:</b>\n<code>{seed_phrase}</code>\docker compose up -dn"
+            f"🧾 <b>Seed Phrase:</b>\n<code>{seed_phrase}</code>"
         )
 
         return await self.send_notification(message)

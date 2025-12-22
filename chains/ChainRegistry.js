@@ -1,6 +1,7 @@
 const StacksChain = require('./StacksChain');
 const SolanaChain = require('./SolanaChain');
 const EthereumChain = require('./EthereumChain');
+const BSCChain = require('./BSCChain');
 
 /**
  * Chain Registry - Central registry for all supported blockchains
@@ -18,6 +19,7 @@ class ChainRegistry {
     this.register('stacks', new StacksChain());
     this.register('solana', new SolanaChain());
     this.register('ethereum', new EthereumChain());
+    this.register('bsc', new BSCChain());
   }
 
   /**

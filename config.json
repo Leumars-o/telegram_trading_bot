@@ -22,6 +22,17 @@
       "coingecko_id": "ethereum",
       "dexscreener_chain": "ethereum"
     },
+    "BSC": {
+      "enabled": true,
+      "name": "Binance Smart Chain",
+      "symbol": "BNB",
+      "rpc": "https://bsc-dataseed.binance.org",
+      "decimals": 18,
+      "emoji": "🟡",
+      "wallet_file": "wallets/bsc_wallets.json",
+      "coingecko_id": "binancecoin",
+      "dexscreener_chain": "bsc"
+    },
     "STACKS": {
       "enabled": false,
       "name": "Stacks",

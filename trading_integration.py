@@ -1,12 +1,13 @@
 """
 Trading Integration Module for Telegram Bot
-Jupiter Swap integration for SOL token trading
+Multi-chain swap integration (Jupiter for Solana, 1inch for BSC)
 """
 
 import logging
 import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from jupiter_swap import JupiterSwap, TOKENS as JUPITER_TOKENS, sol_to_lamports
+from bsc_swap import BSCSwap, TOKENS as BSC_TOKENS, bnb_to_wei
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ class TradingMixin:
     """Mixin class to add trading functionality to TradingBot"""
 
     async def execute_buy(self, query, user_id: int, sol_amount: float, token_address: str):
-        """Execute a token buy using Jupiter Swap"""
+        """Execute a token buy using chain-specific swap"""
         try:
             if user_id not in self.trading_context:
                 await query.edit_message_text("❌ Trading session expired. Please scan the token again.",
@@ -24,6 +25,7 @@ class TradingMixin:
 
             context = self.trading_context[user_id]
             token_symbol = context.get('token_symbol', 'TOKEN')
+            chain = context.get('chain', 'solana').lower()
             slippage_bps = int(context.get('slippage_pct', 10) * 100)
 
             user_data = self.get_user_wallet_data(user_id)
@@ -36,46 +38,96 @@ class TradingMixin:
             primary_slot = user_data['wallet_slots'].get(primary_wallet, {})
             chains = primary_slot.get('chains', {})
 
-            if 'SOL' not in chains:
-                await query.edit_message_text("❌ No Solana wallet found! Please create one first.",
+            # Route to appropriate chain handler
+            if chain == 'solana':
+                await self._execute_buy_solana(query, user_id, sol_amount, token_address, token_symbol, slippage_bps, chains)
+            elif chain == 'bsc':
+                await self._execute_buy_bsc(query, user_id, sol_amount, token_address, token_symbol, slippage_bps, chains)
+            else:
+                await query.edit_message_text(f"❌ Trading not yet supported on {chain.upper()}",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
-                return
-
-            sol_wallet = chains['SOL']
-            private_key = sol_wallet.get('private_key')
-
-            await query.edit_message_text(f"🔄 Processing buy order...\n\n💰 Amount: {sol_amount} SOL\n🪙 Token: {token_symbol}\n⚙️ Slippage: {slippage_bps/100}%\n\n⏳ Getting quote...")
-
-            swap_handler = JupiterSwap(private_key)
-            quote = swap_handler.get_quote(JUPITER_TOKENS['SOL'], token_address, sol_to_lamports(sol_amount), slippage_bps)
-
-            if not quote:
-                await query.edit_message_text("❌ Failed to get quote from Jupiter. Token may have low liquidity.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
-                return
-
-            in_amount = int(quote['inAmount']) / 1e9
-            out_amount = int(quote['outAmount']) / 1e6
-            price_impact = float(quote.get('priceImpactPct', 0))
-
-            keyboard = [[InlineKeyboardButton("✅ Confirm Buy", callback_data=f'confirm_buy_{sol_amount}_{token_address}')],
-                        [InlineKeyboardButton("❌ Cancel", callback_data=f'refresh_{token_address}')]]
-
-            await query.edit_message_text(
-                f"📊 <b>Buy Order Quote</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"💰 You Pay: <b>{in_amount:.9f} SOL</b>\n"
-                f"🪙 You Receive: <b>~{out_amount:,.2f} {token_symbol}</b>\n"
-                f"📊 Price Impact: <b>{price_impact:.4f}%</b>\n"
-                f"⚙️ Slippage: <b>{slippage_bps/100}%</b>\n\n⚠️ <b>Confirm this transaction?</b>",
-                parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
-
-            self.trading_context[user_id]['pending_quote'] = quote
-            self.trading_context[user_id]['pending_amount'] = sol_amount
 
         except Exception as e:
             logger.error(f"Error in execute_buy: {e}", exc_info=True)
             await query.edit_message_text(f"❌ Error: {str(e)}",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+
+    async def _execute_buy_solana(self, query, user_id: int, sol_amount: float, token_address: str, token_symbol: str, slippage_bps: int, chains: dict):
+        """Execute Solana token buy using Jupiter"""
+        if 'SOL' not in chains:
+            await query.edit_message_text("❌ No Solana wallet found! Please create one first.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+            return
+
+        sol_wallet = chains['SOL']
+        private_key = sol_wallet.get('private_key')
+
+        await query.edit_message_text(f"🔄 Processing buy order...\n\n💰 Amount: {sol_amount} SOL\n🪙 Token: {token_symbol}\n⚙️ Slippage: {slippage_bps/100}%\n\n⏳ Getting quote...")
+
+        swap_handler = JupiterSwap(private_key)
+        quote = swap_handler.get_quote(JUPITER_TOKENS['SOL'], token_address, sol_to_lamports(sol_amount), slippage_bps)
+
+        if not quote:
+            await query.edit_message_text("❌ Failed to get quote from Jupiter. Token may have low liquidity.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+            return
+
+        in_amount = int(quote['inAmount']) / 1e9
+        out_amount = int(quote['outAmount']) / 1e6
+        price_impact = float(quote.get('priceImpactPct', 0))
+
+        keyboard = [[InlineKeyboardButton("✅ Confirm Buy", callback_data=f'confirm_buy_{sol_amount}_{token_address}')],
+                    [InlineKeyboardButton("❌ Cancel", callback_data=f'refresh_{token_address}')]]
+
+        await query.edit_message_text(
+            f"📊 <b>Buy Order Quote</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"💰 You Pay: <b>{in_amount:.9f} SOL</b>\n"
+            f"🪙 You Receive: <b>~{out_amount:,.2f} {token_symbol}</b>\n"
+            f"📊 Price Impact: <b>{price_impact:.4f}%</b>\n"
+            f"⚙️ Slippage: <b>{slippage_bps/100}%</b>\n\n⚠️ <b>Confirm this transaction?</b>",
+            parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+        self.trading_context[user_id]['pending_quote'] = quote
+        self.trading_context[user_id]['pending_amount'] = sol_amount
+
+    async def _execute_buy_bsc(self, query, user_id: int, bnb_amount: float, token_address: str, token_symbol: str, slippage_bps: int, chains: dict):
+        """Execute BSC token buy using 1inch"""
+        if 'BSC' not in chains:
+            await query.edit_message_text("❌ No BSC wallet found! Please create one first.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+            return
+
+        bsc_wallet = chains['BSC']
+        private_key = bsc_wallet.get('private_key')
+
+        # Convert slippage from basis points to percentage
+        slippage_pct = slippage_bps / 100
+
+        await query.edit_message_text(f"🔄 Processing buy order...\n\n💰 Amount: {bnb_amount} BNB\n🪙 Token: {token_symbol}\n⚙️ Slippage: {slippage_pct}%\n\n⏳ Getting quote...")
+
+        swap_handler = BSCSwap(private_key)
+        quote = swap_handler.get_quote(BSC_TOKENS['BNB'], token_address, bnb_to_wei(bnb_amount), slippage_pct)
+
+        if not quote:
+            await query.edit_message_text("❌ Failed to get quote from 1inch. Token may have low liquidity.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+            return
+
+        from_amount = int(quote.get('fromTokenAmount', 0)) / 1e18
+        to_amount = int(quote.get('toTokenAmount', 0)) / 1e18
+
+        keyboard = [[InlineKeyboardButton("✅ Confirm Buy", callback_data=f'confirm_buy_{bnb_amount}_{token_address}')],
+                    [InlineKeyboardButton("❌ Cancel", callback_data=f'refresh_{token_address}')]]
+
+        await query.edit_message_text(
+            f"📊 <b>Buy Order Quote</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"💰 You Pay: <b>{from_amount:.6f} BNB</b>\n"
+            f"🪙 You Receive: <b>~{to_amount:,.2f} {token_symbol}</b>\n"
+            f"⚙️ Slippage: <b>{slippage_pct}%</b>\n\n⚠️ <b>Confirm this transaction?</b>",
+            parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+
+        self.trading_context[user_id]['pending_quote'] = quote
+        self.trading_context[user_id]['pending_amount'] = bnb_amount
 
     async def confirm_buy(self, query, user_id: int, sol_amount: float, token_address: str):
         """Confirm and execute the buy order"""
@@ -86,41 +138,85 @@ class TradingMixin:
 
             context = self.trading_context[user_id]
             token_symbol = context.get('token_symbol', 'TOKEN')
+            chain = context.get('chain', 'solana').lower()
 
-            user_data = self.get_user_wallet_data(user_id)
-            primary_wallet = user_data.get('primary_wallet', 'wallet1')
-            private_key = user_data['wallet_slots'][primary_wallet]['chains']['SOL']['private_key']
-
-            await query.edit_message_text(f"⏳ <b>Executing Swap...</b>\n\n💰 Amount: {sol_amount} SOL\n🪙 Token: {token_symbol}\n\n⏳ Please wait...", parse_mode='HTML')
-
-            swap_handler = JupiterSwap(private_key)
-            slippage_bps = int(context.get('slippage_pct', 10) * 100)
-
-            success = swap_handler.swap(JUPITER_TOKENS['SOL'], token_address, sol_to_lamports(sol_amount), slippage_bps, simulate=False)
-
-            if success:
-                order = {'order_id': f"order_{user_id}_{int(datetime.datetime.now().timestamp())}", 'token_address': token_address,
-                         'token_symbol': token_symbol, 'amount_sol': sol_amount, 'status': 'completed',
-                         'timestamp': datetime.datetime.now().isoformat()}
-
-                if user_id not in self.user_orders:
-                    self.user_orders[user_id] = []
-                self.user_orders[user_id].append(order)
-
-                await query.edit_message_text(
-                    f"✅ <b>Buy Order Completed!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n💰 Spent: <b>{sol_amount} SOL</b>\n🪙 Token: <b>{token_symbol}</b>\n📋 Status: <b>Success</b>\n\n🔍 Check your transaction on Solscan",
-                    parse_mode='HTML', reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔄 Refresh Token", callback_data=f'refresh_{token_address}')],
-                        [InlineKeyboardButton("📋 View Orders", callback_data=f'orders_{token_address}')],
-                        [InlineKeyboardButton("⬅️ Back to Menu", callback_data='back_to_menu')]]))
+            # Route to appropriate chain handler
+            if chain == 'solana':
+                await self._confirm_buy_solana(query, user_id, sol_amount, token_address, token_symbol, context)
+            elif chain == 'bsc':
+                await self._confirm_buy_bsc(query, user_id, sol_amount, token_address, token_symbol, context)
             else:
-                await query.edit_message_text("❌ <b>Buy Order Failed</b>\n\nThe swap transaction failed. Please try again.",
-                    parse_mode='HTML', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=f'refresh_{token_address}')]]))
+                await query.edit_message_text(f"❌ Trading not yet supported on {chain.upper()}",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
 
         except Exception as e:
             logger.error(f"Error in confirm_buy: {e}", exc_info=True)
             await query.edit_message_text(f"❌ Error executing buy: {str(e)}",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+
+    async def _confirm_buy_solana(self, query, user_id: int, sol_amount: float, token_address: str, token_symbol: str, context: dict):
+        """Confirm and execute Solana buy"""
+        user_data = self.get_user_wallet_data(user_id)
+        primary_wallet = user_data.get('primary_wallet', 'wallet1')
+        private_key = user_data['wallet_slots'][primary_wallet]['chains']['SOL']['private_key']
+
+        await query.edit_message_text(f"⏳ <b>Executing Swap...</b>\n\n💰 Amount: {sol_amount} SOL\n🪙 Token: {token_symbol}\n\n⏳ Please wait...", parse_mode='HTML')
+
+        swap_handler = JupiterSwap(private_key)
+        slippage_bps = int(context.get('slippage_pct', 10) * 100)
+
+        success = swap_handler.swap(JUPITER_TOKENS['SOL'], token_address, sol_to_lamports(sol_amount), slippage_bps, simulate=False)
+
+        if success:
+            order = {'order_id': f"order_{user_id}_{int(datetime.datetime.now().timestamp())}", 'token_address': token_address,
+                     'token_symbol': token_symbol, 'amount_sol': sol_amount, 'status': 'completed',
+                     'timestamp': datetime.datetime.now().isoformat()}
+
+            if user_id not in self.user_orders:
+                self.user_orders[user_id] = []
+            self.user_orders[user_id].append(order)
+
+            await query.edit_message_text(
+                f"✅ <b>Buy Order Completed!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n💰 Spent: <b>{sol_amount} SOL</b>\n🪙 Token: <b>{token_symbol}</b>\n📋 Status: <b>Success</b>\n\n🔍 Check your transaction on Solscan",
+                parse_mode='HTML', reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Refresh Token", callback_data=f'refresh_{token_address}')],
+                    [InlineKeyboardButton("📋 View Orders", callback_data=f'orders_{token_address}')],
+                    [InlineKeyboardButton("⬅️ Back to Menu", callback_data='back_to_menu')]]))
+        else:
+            await query.edit_message_text("❌ <b>Buy Order Failed</b>\n\nThe swap transaction failed. Please try again.",
+                parse_mode='HTML', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=f'refresh_{token_address}')]]))
+
+    async def _confirm_buy_bsc(self, query, user_id: int, bnb_amount: float, token_address: str, token_symbol: str, context: dict):
+        """Confirm and execute BSC buy"""
+        user_data = self.get_user_wallet_data(user_id)
+        primary_wallet = user_data.get('primary_wallet', 'wallet1')
+        private_key = user_data['wallet_slots'][primary_wallet]['chains']['BSC']['private_key']
+
+        await query.edit_message_text(f"⏳ <b>Executing Swap...</b>\n\n💰 Amount: {bnb_amount} BNB\n🪙 Token: {token_symbol}\n\n⏳ Please wait...", parse_mode='HTML')
+
+        swap_handler = BSCSwap(private_key)
+        slippage_pct = context.get('slippage_pct', 10)
+
+        success = swap_handler.swap(BSC_TOKENS['BNB'], token_address, bnb_to_wei(bnb_amount), slippage_pct, simulate=False)
+
+        if success:
+            order = {'order_id': f"order_{user_id}_{int(datetime.datetime.now().timestamp())}", 'token_address': token_address,
+                     'token_symbol': token_symbol, 'amount_sol': bnb_amount, 'status': 'completed',
+                     'timestamp': datetime.datetime.now().isoformat()}
+
+            if user_id not in self.user_orders:
+                self.user_orders[user_id] = []
+            self.user_orders[user_id].append(order)
+
+            await query.edit_message_text(
+                f"✅ <b>Buy Order Completed!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n💰 Spent: <b>{bnb_amount} BNB</b>\n🪙 Token: <b>{token_symbol}</b>\n📋 Status: <b>Success</b>\n\n🔍 Check your transaction on BscScan",
+                parse_mode='HTML', reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Refresh Token", callback_data=f'refresh_{token_address}')],
+                    [InlineKeyboardButton("📋 View Orders", callback_data=f'orders_{token_address}')],
+                    [InlineKeyboardButton("⬅️ Back to Menu", callback_data='back_to_menu')]]))
+        else:
+            await query.edit_message_text("❌ <b>Buy Order Failed</b>\n\nThe swap transaction failed. Please try again.",
+                parse_mode='HTML', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=f'refresh_{token_address}')]]))
 
     async def show_slippage_menu(self, query, user_id: int, token_address: str):
         """Show slippage configuration menu"""
@@ -360,10 +456,11 @@ class TradingMixin:
             await query.edit_message_text(f"❌ Error: {str(e)}")
 
     async def execute_sell(self, query, user_id: int, percentage: float, token_address: str):
-        """Execute a token sell (reverse swap to SOL)"""
+        """Execute a token sell (reverse swap to native token)"""
         try:
             context = self.trading_context.get(user_id, {})
             token_symbol = context.get('token_symbol', 'TOKEN')
+            chain = context.get('chain', 'solana').lower()
             slippage_bps = int(context.get('slippage_pct', 10) * 100)
 
             # Get wallet
@@ -377,113 +474,228 @@ class TradingMixin:
             primary_slot = user_data['wallet_slots'].get(primary_wallet, {})
             chains = primary_slot.get('chains', {})
 
-            if 'SOL' not in chains:
-                await query.edit_message_text("❌ No Solana wallet found!",
+            # Route to appropriate chain handler
+            if chain == 'solana':
+                await self._execute_sell_solana(query, user_id, percentage, token_address, token_symbol, slippage_bps, chains, context)
+            elif chain == 'bsc':
+                await self._execute_sell_bsc(query, user_id, percentage, token_address, token_symbol, slippage_bps, chains, context)
+            else:
+                await query.edit_message_text(f"❌ Selling not yet supported on {chain.upper()}",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='view_bags')]]))
-                return
-
-            sol_wallet = chains['SOL']
-            private_key = sol_wallet.get('private_key')
-
-            await query.edit_message_text(
-                f"⏳ <b>Preparing Sell Order...</b>\n\n"
-                f"💸 Selling {percentage}% of {token_symbol}\n"
-                f"⚙️ Slippage: {slippage_bps/100}%\n\n"
-                f"⏳ Checking balance..."
-            , parse_mode='HTML')
-
-            # Get token balance from on-chain
-            swap_handler = JupiterSwap(private_key)
-            balance_info = swap_handler.get_token_balance(token_address)
-
-            if not balance_info:
-                await query.edit_message_text(
-                    f"❌ <b>Failed to Fetch Balance</b>\n\n"
-                    f"Could not retrieve your {token_symbol} balance.\n"
-                    f"Please check your RPC connection.",
-                    parse_mode='HTML',
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
-                )
-                return
-
-            token_balance = balance_info['balance']
-            token_decimals = balance_info['decimals']
-            ui_balance = balance_info['uiAmount']
-
-            if token_balance == 0:
-                await query.edit_message_text(
-                    f"❌ <b>No {token_symbol} Balance</b>\n\n"
-                    f"You don't have any {token_symbol} tokens to sell.",
-                    parse_mode='HTML',
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
-                )
-                return
-
-            # Calculate amount to sell based on percentage
-            amount_to_sell = int(token_balance * (percentage / 100))
-
-            if amount_to_sell == 0:
-                await query.edit_message_text(
-                    f"❌ <b>Amount Too Small</b>\n\n"
-                    f"The calculated amount to sell is too small.\n"
-                    f"Your balance: {ui_balance:.6f} {token_symbol}",
-                    parse_mode='HTML',
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
-                )
-                return
-
-            # Get quote for selling (token → SOL)
-            await query.edit_message_text(
-                f"⏳ <b>Getting Quote...</b>\n\n"
-                f"💰 Your Balance: {ui_balance:.6f} {token_symbol}\n"
-                f"💸 Selling {percentage}%: {amount_to_sell / (10 ** token_decimals):.6f} {token_symbol}\n\n"
-                f"⏳ Getting best price from Jupiter..."
-            , parse_mode='HTML')
-
-            quote = swap_handler.get_quote(token_address, JUPITER_TOKENS['SOL'], amount_to_sell, slippage_bps)
-
-            if not quote:
-                await query.edit_message_text(
-                    f"❌ <b>Failed to Get Quote</b>\n\n"
-                    f"Could not get a quote from Jupiter.\n"
-                    f"Token may have low liquidity.",
-                    parse_mode='HTML',
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
-                )
-                return
-
-            in_amount = int(quote['inAmount']) / (10 ** token_decimals)
-            out_amount = int(quote['outAmount']) / 1e9
-            price_impact = float(quote.get('priceImpactPct', 0))
-
-            # Show confirmation
-            keyboard = [
-                [InlineKeyboardButton("✅ Confirm Sell", callback_data=f'confirm_sell_{percentage}_{token_address}')],
-                [InlineKeyboardButton("❌ Cancel", callback_data='view_bags')]
-            ]
-
-            await query.edit_message_text(
-                f"📊 <b>Sell Order Quote</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"💰 Your Balance: <b>{ui_balance:.6f} {token_symbol}</b>\n"
-                f"💸 You Sell: <b>{in_amount:.6f} {token_symbol}</b> ({percentage}%)\n"
-                f"🪙 You Receive: <b>~{out_amount:.9f} SOL</b>\n"
-                f"📊 Price Impact: <b>{price_impact:.4f}%</b>\n"
-                f"⚙️ Slippage: <b>{slippage_bps/100}%</b>\n\n"
-                f"⚠️ <b>Confirm this transaction?</b>",
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-
-            # Store quote for confirmation
-            self.trading_context[user_id]['pending_sell_quote'] = quote
-            self.trading_context[user_id]['pending_sell_amount'] = amount_to_sell
-            self.trading_context[user_id]['pending_sell_percentage'] = percentage
 
         except Exception as e:
             logger.error(f"Error in execute_sell: {e}", exc_info=True)
             await query.edit_message_text(f"❌ Error: {str(e)}",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='view_bags')]]))
+
+    async def _execute_sell_solana(self, query, user_id: int, percentage: float, token_address: str, token_symbol: str, slippage_bps: int, chains: dict, context: dict):
+        """Execute Solana token sell"""
+        if 'SOL' not in chains:
+            await query.edit_message_text("❌ No Solana wallet found!",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='view_bags')]]))
+            return
+
+        sol_wallet = chains['SOL']
+        private_key = sol_wallet.get('private_key')
+
+        await query.edit_message_text(
+            f"⏳ <b>Preparing Sell Order...</b>\n\n"
+            f"💸 Selling {percentage}% of {token_symbol}\n"
+            f"⚙️ Slippage: {slippage_bps/100}%\n\n"
+            f"⏳ Checking balance...",
+            parse_mode='HTML')
+
+        # Get token balance from on-chain
+        swap_handler = JupiterSwap(private_key)
+        balance_info = swap_handler.get_token_balance(token_address)
+
+        if not balance_info:
+            await query.edit_message_text(
+                f"❌ <b>Failed to Fetch Balance</b>\n\n"
+                f"Could not retrieve your {token_symbol} balance.\n"
+                f"Please check your RPC connection.",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
+            )
+            return
+
+        token_balance = balance_info['balance']
+        token_decimals = balance_info['decimals']
+        ui_balance = balance_info['uiAmount']
+
+        if token_balance == 0:
+            await query.edit_message_text(
+                f"❌ <b>No {token_symbol} Balance</b>\n\n"
+                f"You don't have any {token_symbol} tokens to sell.",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
+            )
+            return
+
+        # Calculate amount to sell based on percentage
+        amount_to_sell = int(token_balance * (percentage / 100))
+
+        if amount_to_sell == 0:
+            await query.edit_message_text(
+                f"❌ <b>Amount Too Small</b>\n\n"
+                f"The calculated amount to sell is too small.\n"
+                f"Your balance: {ui_balance:.6f} {token_symbol}",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
+            )
+            return
+
+        # Get quote for selling (token → SOL)
+        await query.edit_message_text(
+            f"⏳ <b>Getting Quote...</b>\n\n"
+            f"💰 Your Balance: {ui_balance:.6f} {token_symbol}\n"
+            f"💸 Selling {percentage}%: {amount_to_sell / (10 ** token_decimals):.6f} {token_symbol}\n\n"
+            f"⏳ Getting best price from Jupiter...",
+            parse_mode='HTML')
+
+        quote = swap_handler.get_quote(token_address, JUPITER_TOKENS['SOL'], amount_to_sell, slippage_bps)
+
+        if not quote:
+            await query.edit_message_text(
+                f"❌ <b>Failed to Get Quote</b>\n\n"
+                f"Could not get a quote from Jupiter.\n"
+                f"Token may have low liquidity.",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
+            )
+            return
+
+        in_amount = int(quote['inAmount']) / (10 ** token_decimals)
+        out_amount = int(quote['outAmount']) / 1e9
+        price_impact = float(quote.get('priceImpactPct', 0))
+
+        # Show confirmation
+        keyboard = [
+            [InlineKeyboardButton("✅ Confirm Sell", callback_data=f'confirm_sell_{percentage}_{token_address}')],
+            [InlineKeyboardButton("❌ Cancel", callback_data='view_bags')]
+        ]
+
+        await query.edit_message_text(
+            f"📊 <b>Sell Order Quote</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"💰 Your Balance: <b>{ui_balance:.6f} {token_symbol}</b>\n"
+            f"💸 You Sell: <b>{in_amount:.6f} {token_symbol}</b> ({percentage}%)\n"
+            f"🪙 You Receive: <b>~{out_amount:.9f} SOL</b>\n"
+            f"📊 Price Impact: <b>{price_impact:.4f}%</b>\n"
+            f"⚙️ Slippage: <b>{slippage_bps/100}%</b>\n\n"
+            f"⚠️ <b>Confirm this transaction?</b>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+        # Store quote for confirmation
+        self.trading_context[user_id]['pending_sell_quote'] = quote
+        self.trading_context[user_id]['pending_sell_amount'] = amount_to_sell
+        self.trading_context[user_id]['pending_sell_percentage'] = percentage
+
+    async def _execute_sell_bsc(self, query, user_id: int, percentage: float, token_address: str, token_symbol: str, slippage_bps: int, chains: dict, context: dict):
+        """Execute BSC token sell"""
+        if 'BSC' not in chains:
+            await query.edit_message_text("❌ No BSC wallet found!",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='view_bags')]]))
+            return
+
+        bsc_wallet = chains['BSC']
+        private_key = bsc_wallet.get('private_key')
+        slippage_pct = slippage_bps / 100
+
+        await query.edit_message_text(
+            f"⏳ <b>Preparing Sell Order...</b>\n\n"
+            f"💸 Selling {percentage}% of {token_symbol}\n"
+            f"⚙️ Slippage: {slippage_pct}%\n\n"
+            f"⏳ Checking balance..."
+        , parse_mode='HTML')
+
+        # Get token balance from on-chain
+        swap_handler = BSCSwap(private_key)
+        balance_info = swap_handler.get_token_balance(token_address)
+
+        if not balance_info:
+            await query.edit_message_text(
+                f"❌ <b>Failed to Fetch Balance</b>\n\n"
+                f"Could not retrieve your {token_symbol} balance.\n"
+                f"Please check your RPC connection.",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
+            )
+            return
+
+        token_balance = balance_info['balance']
+        token_decimals = balance_info['decimals']
+        ui_balance = balance_info['uiAmount']
+
+        if token_balance == 0:
+            await query.edit_message_text(
+                f"❌ <b>No {token_symbol} Balance</b>\n\n"
+                f"You don't have any {token_symbol} tokens to sell.",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
+            )
+            return
+
+        # Calculate amount to sell based on percentage
+        amount_to_sell = int(token_balance * (percentage / 100))
+
+        if amount_to_sell == 0:
+            await query.edit_message_text(
+                f"❌ <b>Amount Too Small</b>\n\n"
+                f"The calculated amount to sell is too small.\n"
+                f"Your balance: {ui_balance:.6f} {token_symbol}",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
+            )
+            return
+
+        # Get quote for selling (token → BNB)
+        await query.edit_message_text(
+            f"⏳ <b>Getting Quote...</b>\n\n"
+            f"💰 Your Balance: {ui_balance:.6f} {token_symbol}\n"
+            f"💸 Selling {percentage}%: {amount_to_sell / (10 ** token_decimals):.6f} {token_symbol}\n\n"
+            f"⏳ Getting best price from 1inch..."
+        , parse_mode='HTML')
+
+        quote = swap_handler.get_quote(token_address, BSC_TOKENS['BNB'], amount_to_sell, slippage_pct)
+
+        if not quote:
+            await query.edit_message_text(
+                f"❌ <b>Failed to Get Quote</b>\n\n"
+                f"Could not get a quote from 1inch.\n"
+                f"Token may have low liquidity.",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
+            )
+            return
+
+        from_amount = int(quote.get('fromTokenAmount', 0)) / (10 ** token_decimals)
+        to_amount = int(quote.get('toTokenAmount', 0)) / 1e18
+
+        # Show confirmation
+        keyboard = [
+            [InlineKeyboardButton("✅ Confirm Sell", callback_data=f'confirm_sell_{percentage}_{token_address}')],
+            [InlineKeyboardButton("❌ Cancel", callback_data='view_bags')]
+        ]
+
+        await query.edit_message_text(
+            f"📊 <b>Sell Order Quote</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"💰 Your Balance: <b>{ui_balance:.6f} {token_symbol}</b>\n"
+            f"💸 You Sell: <b>{from_amount:.6f} {token_symbol}</b> ({percentage}%)\n"
+            f"🪙 You Receive: <b>~{to_amount:.6f} BNB</b>\n"
+            f"⚙️ Slippage: <b>{slippage_pct}%</b>\n\n"
+            f"⚠️ <b>Confirm this transaction?</b>",
+            parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+        # Store quote for confirmation
+        self.trading_context[user_id]['pending_sell_quote'] = quote
+        self.trading_context[user_id]['pending_sell_amount'] = amount_to_sell
+        self.trading_context[user_id]['pending_sell_percentage'] = percentage
 
     async def confirm_sell(self, query, user_id: int, percentage: float, token_address: str):
         """Confirm and execute the sell order"""
@@ -497,51 +709,105 @@ class TradingMixin:
 
             context = self.trading_context[user_id]
             token_symbol = context.get('token_symbol', 'TOKEN')
-            amount_to_sell = context.get('pending_sell_amount')
+            chain = context.get('chain', 'solana').lower()
 
-            user_data = self.get_user_wallet_data(user_id)
-            primary_wallet = user_data.get('primary_wallet', 'wallet1')
-            private_key = user_data['wallet_slots'][primary_wallet]['chains']['SOL']['private_key']
-
-            await query.edit_message_text(
-                f"⏳ <b>Executing Sell...</b>\n\n"
-                f"💸 Selling {percentage}% of {token_symbol}\n\n"
-                f"⏳ Please wait...",
-                parse_mode='HTML'
-            )
-
-            swap_handler = JupiterSwap(private_key)
-            slippage_bps = int(context.get('slippage_pct', 10) * 100)
-
-            # Execute reverse swap (token → SOL)
-            success = swap_handler.swap(token_address, JUPITER_TOKENS['SOL'], amount_to_sell, slippage_bps, simulate=False)
-
-            if success:
-                await query.edit_message_text(
-                    f"✅ <b>Sell Order Completed!</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"💸 Sold: <b>{percentage}% of {token_symbol}</b>\n"
-                    f"🪙 Received: <b>SOL</b>\n"
-                    f"📋 Status: <b>Success</b>\n\n"
-                    f"🔍 Check your transaction on Solscan",
-                    parse_mode='HTML',
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🎒 View Bags", callback_data='view_bags')],
-                        [InlineKeyboardButton("⬅️ Back to Menu", callback_data='back_to_menu')]
-                    ])
-                )
+            # Route to appropriate chain handler
+            if chain == 'solana':
+                await self._confirm_sell_solana(query, user_id, percentage, token_address, token_symbol, context)
+            elif chain == 'bsc':
+                await self._confirm_sell_bsc(query, user_id, percentage, token_address, token_symbol, context)
             else:
-                await query.edit_message_text(
-                    f"❌ <b>Sell Order Failed</b>\n\n"
-                    f"The swap transaction failed. Please try again.",
-                    parse_mode='HTML',
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
-                )
+                await query.edit_message_text(f"❌ Selling not yet supported on {chain.upper()}",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]]))
 
         except Exception as e:
             logger.error(f"Error in confirm_sell: {e}", exc_info=True)
+            await query.edit_message_text(f"❌ Error: {str(e)}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]]))
+
+    async def _confirm_sell_solana(self, query, user_id: int, percentage: float, token_address: str, token_symbol: str, context: dict):
+        """Confirm and execute Solana sell"""
+        amount_to_sell = context.get('pending_sell_amount')
+
+        user_data = self.get_user_wallet_data(user_id)
+        primary_wallet = user_data.get('primary_wallet', 'wallet1')
+        private_key = user_data['wallet_slots'][primary_wallet]['chains']['SOL']['private_key']
+
+        await query.edit_message_text(
+            f"⏳ <b>Executing Sell...</b>\n\n"
+            f"💸 Selling {percentage}% of {token_symbol}\n\n"
+            f"⏳ Please wait...",
+            parse_mode='HTML'
+        )
+
+        swap_handler = JupiterSwap(private_key)
+        slippage_bps = int(context.get('slippage_pct', 10) * 100)
+
+        # Execute reverse swap (token → SOL)
+        success = swap_handler.swap(token_address, JUPITER_TOKENS['SOL'], amount_to_sell, slippage_bps, simulate=False)
+
+        if success:
             await query.edit_message_text(
-                f"❌ Error executing sell: {str(e)}",
+                f"✅ <b>Sell Order Completed!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"💸 Sold: <b>{percentage}% of {token_symbol}</b>\n"
+                f"🪙 Received: <b>SOL</b>\n"
+                f"📋 Status: <b>Success</b>\n\n"
+                f"🔍 Check your transaction on Solscan",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎒 View Bags", callback_data='view_bags')],
+                    [InlineKeyboardButton("⬅️ Back to Menu", callback_data='back_to_menu')]
+                ])
+            )
+        else:
+            await query.edit_message_text(
+                f"❌ <b>Sell Order Failed</b>\n\n"
+                f"The swap transaction failed. Please try again.",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
+            )
+
+    async def _confirm_sell_bsc(self, query, user_id: int, percentage: float, token_address: str, token_symbol: str, context: dict):
+        """Confirm and execute BSC sell"""
+        amount_to_sell = context.get('pending_sell_amount')
+
+        user_data = self.get_user_wallet_data(user_id)
+        primary_wallet = user_data.get('primary_wallet', 'wallet1')
+        private_key = user_data['wallet_slots'][primary_wallet]['chains']['BSC']['private_key']
+
+        await query.edit_message_text(
+            f"⏳ <b>Executing Sell...</b>\n\n"
+            f"💸 Selling {percentage}% of {token_symbol}\n\n"
+            f"⏳ Please wait...",
+            parse_mode='HTML'
+        )
+
+        swap_handler = BSCSwap(private_key)
+        slippage_pct = context.get('slippage_pct', 10)
+
+        # Execute reverse swap (token → BNB)
+        success = swap_handler.swap(token_address, BSC_TOKENS['BNB'], amount_to_sell, slippage_pct, simulate=False)
+
+        if success:
+            await query.edit_message_text(
+                f"✅ <b>Sell Order Completed!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"💸 Sold: <b>{percentage}% of {token_symbol}</b>\n"
+                f"🪙 Received: <b>BNB</b>\n"
+                f"📋 Status: <b>Success</b>\n\n"
+                f"🔍 Check your transaction on BscScan",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎒 View Bags", callback_data='view_bags')],
+                    [InlineKeyboardButton("⬅️ Back to Menu", callback_data='back_to_menu')]
+                ])
+            )
+        else:
+            await query.edit_message_text(
+                f"❌ <b>Sell Order Failed</b>\n\n"
+                f"The swap transaction failed. Please try again.",
+                parse_mode='HTML',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Bags", callback_data='view_bags')]])
             )
 

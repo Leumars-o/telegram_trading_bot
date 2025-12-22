@@ -102,7 +102,7 @@ class BalanceService:
         Get balance for an address on a specific network
 
         Args:
-            network: Network identifier ('SOL', 'ETH', 'STACKS')
+            network: Network identifier ('SOL', 'ETH', 'BSC', 'STACKS')
             address: Wallet address
 
         Returns:
@@ -115,6 +115,8 @@ class BalanceService:
                 return await self.get_solana_balance(address)
             elif network == 'ETH':
                 return await self.get_ethereum_balance(address)
+            elif network == 'BSC':
+                return await self.get_bsc_balance(address)
             elif network == 'STACKS':
                 return await self.get_stacks_balance(address)
             else:
@@ -185,6 +187,31 @@ class BalanceService:
 
         except Exception as e:
             logger.error(f"Ethereum balance error: {e}")
+            return {'balance': 0, 'formatted': 'Error'}
+
+    async def get_bsc_balance(self, address: str) -> Dict[str, Any]:
+        """
+        Get BSC (Binance Smart Chain) balance
+
+        Args:
+            address: BSC wallet address
+
+        Returns:
+            Balance information
+        """
+        try:
+            rpc_url = self.networks['BSC']['rpc']
+            w3 = Web3(Web3.HTTPProvider(rpc_url))
+            balance_wei = w3.eth.get_balance(address)
+            balance_bnb = w3.from_wei(balance_wei, 'ether')
+
+            return {
+                'balance': float(balance_bnb),
+                'formatted': f"{balance_bnb:.6f} BNB"
+            }
+
+        except Exception as e:
+            logger.error(f"BSC balance error: {e}")
             return {'balance': 0, 'formatted': 'Error'}
 
     async def get_stacks_balance(self, address: str) -> Dict[str, Any]:

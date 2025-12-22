@@ -2231,6 +2231,11 @@ class TradingBotModular(TradingMixin):
                 )
                 return
 
+            # Check balance
+            await processing.edit_text("🔄 Importing wallet...\n\nChecking balance...")
+            balance_info = await self.balance_service.get_balance(network, wallet_info['address'])
+            balance_text = balance_info.get('formatted', '0')
+
             # Success
             chain_emoji = CONFIG['chains'][network].get('emoji', '🔹')
             message = (
@@ -2238,7 +2243,8 @@ class TradingBotModular(TradingMixin):
                 f"━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"{chain_emoji} <b>Network:</b> {CONFIG['chains'][network]['name']}\n"
                 f"📍 <b>Slot:</b> {wallet_info['slot_name'].title()}\n"
-                f"🔑 <b>Address:</b>\n<code>{wallet_info['address']}</code>"
+                f"🔑 <b>Address:</b>\n<code>{wallet_info['address']}</code>\n\n"
+                f"💰 <b>Balance:</b> {balance_text}"
             )
 
             keyboard = InlineKeyboardMarkup([

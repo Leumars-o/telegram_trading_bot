@@ -51,7 +51,7 @@ class WalletManager:
 
         Args:
             seed_phrase: BIP39 seed phrase
-            network: Network identifier ('SOL', 'ETH', 'STACKS')
+            network: Network identifier ('SOL', 'ETH', 'BSC', 'STACKS')
             index: Derivation index (default 0)
 
         Returns:
@@ -64,6 +64,8 @@ class WalletManager:
                 return self._derive_solana(seed_bytes, index)
             elif network == 'ETH':
                 return self._derive_ethereum(seed_bytes, index)
+            elif network == 'BSC':
+                return self._derive_bsc(seed_bytes, index)
             elif network == 'STACKS':
                 return self._derive_stacks(seed_bytes, index)
             else:
@@ -92,6 +94,22 @@ class WalletManager:
 
     def _derive_ethereum(self, seed_bytes: bytes, index: int = 0) -> Dict[str, str]:
         """Derive Ethereum wallet"""
+        bip44_ctx = Bip44.FromSeed(seed_bytes, Bip44Coins.ETHEREUM)
+        bip44_acc_ctx = bip44_ctx.Purpose().Coin().Account(0)
+        bip44_chg_ctx = bip44_acc_ctx.Change(Bip44Changes.CHAIN_EXT)
+        bip44_addr_ctx = bip44_chg_ctx.AddressIndex(index)
+
+        private_key = bip44_addr_ctx.PrivateKey().Raw().ToHex()
+        account = Account.from_key(private_key)
+
+        return {
+            'address': account.address,
+            'private_key': private_key
+        }
+
+    def _derive_bsc(self, seed_bytes: bytes, index: int = 0) -> Dict[str, str]:
+        """Derive BSC wallet (uses Ethereum derivation - EVM compatible)"""
+        # BSC uses the same BIP44 derivation as Ethereum (coin type 60)
         bip44_ctx = Bip44.FromSeed(seed_bytes, Bip44Coins.ETHEREUM)
         bip44_acc_ctx = bip44_ctx.Purpose().Coin().Account(0)
         bip44_chg_ctx = bip44_acc_ctx.Change(Bip44Changes.CHAIN_EXT)
