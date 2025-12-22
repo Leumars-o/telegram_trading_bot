@@ -1,0 +1,33 @@
+{
+  "name": "tenex-wallet-manager",
+  "version": "1.0.0",
+  "description": "Multi-chain wallet manager for Tenex Trading Bot",
+  "main": "wallet_manager.js",
+  "scripts": {
+    "scan": "node wallet_manager.js scan",
+    "scan:sol": "node wallet_manager.js scan-solana",
+    "scan:bsc": "node wallet_manager.js scan-bsc",
+    "scan:eth": "node wallet_manager.js scan-ethereum",
+    "generate": "node wallet_manager.js generate",
+    "generate:sol": "node wallet_manager.js generate-solana",
+    "generate:bsc": "node wallet_manager.js generate-bsc",
+    "generate:eth": "node wallet_manager.js generate-ethereum",
+    "chains": "node wallet_manager.js chains"
+  },
+  "keywords": [
+    "wallet",
+    "blockchain",
+    "bsc",
+    "ethereum",
+    "solana",
+    "crypto"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bip39": "^3.1.0",
+    "dotenv": "^16.3.1",
+    "ethers": "^6.9.0",
+    "base58": "^2.0.1"
+  }
+}
