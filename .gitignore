@@ -3,6 +3,7 @@ wallets/
 .claude
 .env
 __pycache__/
+.DS_Store
 logs/
 backups/
 *.log
