@@ -36,6 +36,10 @@ JUPITER_API_KEY = os.getenv('JUPITER_API_KEY', '')  # REQUIRED - Get free key at
 HELIUS_RPC_URL = os.getenv('HELIUS_RPC_URL', '')
 SOLANA_RPC = HELIUS_RPC_URL if HELIUS_RPC_URL else os.getenv('SOLANA_RPC', 'https://api.mainnet-beta.solana.com')
 
+# Minimum balance to keep in wallet for rent exemption and future transactions
+# This should NEVER be spent in swaps
+MIN_SOL_RESERVE = 3_000_000  # 0.003 SOL (covers ATA rent ~2.04M + tx fees ~0.11M + buffer)
+
 # Validate API key
 if not JUPITER_API_KEY:
     logger.warning("="*60)
@@ -87,6 +91,59 @@ class JupiterSwap:
         except Exception as e:
             logger.error(f"Failed to load private key: {e}")
             raise ValueError(f"Invalid private key format: {e}")
+
+    def get_sol_balance(self) -> Optional[int]:
+        """
+        Get SOL balance for the wallet in lamports
+
+        Returns:
+            Balance in lamports or None if error
+        """
+        try:
+            payload = {
+                'jsonrpc': '2.0',
+                'id': 1,
+                'method': 'getBalance',
+                'params': [self.wallet_address]
+            }
+
+            logger.info(f"Fetching SOL balance for {self.wallet_address[:8]}...")
+            response = self.session.post(
+                self.rpc_url,
+                json=payload,
+                headers={'Content-Type': 'application/json'}
+            )
+            response.raise_for_status()
+
+            result = response.json()
+
+            if 'error' in result:
+                logger.error(f"RPC error: {result['error']}")
+                return None
+
+            balance = result.get('result', {}).get('value', 0)
+            logger.info(f"SOL balance: {balance / 1e9:.9f} SOL ({balance} lamports)")
+            return balance
+
+        except Exception as e:
+            logger.error(f"Failed to get SOL balance: {e}")
+            if hasattr(e, 'response') and e.response:
+                logger.error(f"Response: {e.response.text}")
+            return None
+
+    def get_max_swappable_sol(self) -> Optional[int]:
+        """
+        Calculate the maximum amount of SOL that can be swapped
+        while keeping MIN_SOL_RESERVE for fees and rent
+
+        Returns:
+            Maximum swappable amount in lamports or 0 if insufficient balance
+        """
+        balance = self.get_sol_balance()
+        if balance is None or balance <= MIN_SOL_RESERVE:
+            return 0
+
+        return balance - MIN_SOL_RESERVE
 
     def get_token_balance(self, token_mint: str) -> Optional[Dict[str, Any]]:
         """
@@ -403,11 +460,17 @@ class JupiterSwap:
             input_mint: Input token mint address
             output_mint: Output token mint address
             amount: Amount in smallest unit (lamports for SOL)
+                   Should be calculated as: balance - MIN_SOL_RESERVE
             slippage_bps: Slippage tolerance in basis points
             simulate: If True, only simulate without executing
 
         Returns:
             True if successful, False otherwise
+
+        Note:
+            The amount parameter should already account for fees/rent.
+            Always keep MIN_SOL_RESERVE (0.003 SOL) in wallet.
+            Use get_max_swappable_sol() to calculate safe amount.
         """
         # Get quote
         quote = self.get_quote(input_mint, output_mint, amount, slippage_bps)
