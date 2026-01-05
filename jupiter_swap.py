@@ -77,17 +77,31 @@ class JupiterSwap:
         self.session = requests.Session()
 
         # Load keypair from private key
+        # Support both hex (64 or 128 chars) and base58 formats
         try:
-            # Try hex format first
-            if len(private_key) == 128:
-                key_bytes = bytes.fromhex(private_key)
-            else:
-                # Try base58
-                key_bytes = b58decode(private_key)
+            # Try hex format first (64 chars = 32 bytes, 128 chars = 64 bytes)
+            if len(private_key) in [64, 128]:
+                try:
+                    key_bytes = bytes.fromhex(private_key)
+                    self.keypair = Keypair.from_bytes(key_bytes)
+                    self.wallet_address = str(self.keypair.pubkey())
+                    logger.info(f"Initialized wallet: {self.wallet_address}")
+                    return
+                except (ValueError, TypeError):
+                    # Not valid hex, try base58
+                    pass
 
-            self.keypair = Keypair.from_bytes(key_bytes)
-            self.wallet_address = str(self.keypair.pubkey())
-            logger.info(f"Initialized wallet: {self.wallet_address}")
+            # Try base58 format
+            try:
+                key_bytes = b58decode(private_key)
+                self.keypair = Keypair.from_bytes(key_bytes)
+                self.wallet_address = str(self.keypair.pubkey())
+                logger.info(f"Initialized wallet: {self.wallet_address}")
+                return
+            except Exception as e:
+                logger.error(f"Failed to decode base58 private key: {e}")
+                raise ValueError(f"Invalid private key format. Must be hex (64/128 chars) or base58. Error: {e}")
+
         except Exception as e:
             logger.error(f"Failed to load private key: {e}")
             raise ValueError(f"Invalid private key format: {e}")
