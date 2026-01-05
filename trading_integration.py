@@ -18,6 +18,8 @@ class TradingMixin:
     async def execute_buy(self, query, user_id: int, sol_amount: float, token_address: str):
         """Execute a token buy using chain-specific swap"""
         try:
+            logger.info(f"execute_buy called: user_id={user_id}, sol_amount={sol_amount}, token_address={token_address}")
+
             if user_id not in self.trading_context:
                 await query.edit_message_text("❌ Trading session expired. Please scan the token again.",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
@@ -37,6 +39,8 @@ class TradingMixin:
             primary_wallet = user_data.get('primary_wallet', 'wallet1')
             primary_slot = user_data['wallet_slots'].get(primary_wallet, {})
             chains = primary_slot.get('chains', {})
+
+            logger.info(f"Wallet data structure: primary_wallet={primary_wallet}, has_chains={'SOL' in chains}")
 
             # Route to appropriate chain handler
             if chain == 'solana':
@@ -61,6 +65,29 @@ class TradingMixin:
 
         sol_wallet = chains['SOL']
         private_key = sol_wallet.get('private_key')
+
+        # Validate private key before using it
+        if not private_key or not isinstance(private_key, str):
+            logger.error(f"Invalid private key retrieved: type={type(private_key)}, value={private_key}")
+            await query.edit_message_text(
+                f"❌ <b>Wallet Error</b>\n\n"
+                f"Failed to retrieve valid private key from wallet.\n"
+                f"Please contact support or try recreating your wallet.",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+            return
+
+        if len(private_key) < 32:
+            logger.error(f"Private key too short: length={len(private_key)}, preview={private_key[:10]}...")
+            await query.edit_message_text(
+                f"❌ <b>Wallet Error</b>\n\n"
+                f"Private key format is invalid.\n"
+                f"Please contact support or try recreating your wallet.",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+            return
+
+        logger.info(f"Retrieved private key: length={len(private_key)}, starts_with={private_key[:8]}...")
 
         await query.edit_message_text(f"🔄 Processing buy order...\n\n💰 Amount: {sol_amount} SOL\n🪙 Token: {token_symbol}\n⚙️ Slippage: {slippage_bps/100}%\n\n⏳ Checking balance...")
 
