@@ -78,33 +78,54 @@ class JupiterSwap:
 
         # Load keypair from private key
         # Support both hex (64 or 128 chars) and base58 formats
-        try:
-            # Try hex format first (64 chars = 32 bytes, 128 chars = 64 bytes)
-            if len(private_key) in [64, 128]:
-                try:
-                    key_bytes = bytes.fromhex(private_key)
-                    self.keypair = Keypair.from_bytes(key_bytes)
-                    self.wallet_address = str(self.keypair.pubkey())
-                    logger.info(f"Initialized wallet: {self.wallet_address}")
-                    return
-                except (ValueError, TypeError):
-                    # Not valid hex, try base58
-                    pass
 
-            # Try base58 format
+        # Try hex format first (64 chars = 32 bytes seed, 128 chars = 64 bytes full keypair)
+        if len(private_key) in [64, 128]:
             try:
-                key_bytes = b58decode(private_key)
-                self.keypair = Keypair.from_bytes(key_bytes)
-                self.wallet_address = str(self.keypair.pubkey())
-                logger.info(f"Initialized wallet: {self.wallet_address}")
-                return
-            except Exception as e:
-                logger.error(f"Failed to decode base58 private key: {e}")
-                raise ValueError(f"Invalid private key format. Must be hex (64/128 chars) or base58. Error: {e}")
+                logger.info(f"Attempting hex decode for {len(private_key)}-char key...")
+                key_bytes = bytes.fromhex(private_key)
+                logger.info(f"Hex decode successful, got {len(key_bytes)} bytes...")
 
+                # 32 bytes = seed only, use from_seed()
+                # 64 bytes = full keypair, use from_bytes()
+                if len(key_bytes) == 32:
+                    logger.info(f"Creating keypair from 32-byte seed...")
+                    self.keypair = Keypair.from_seed(key_bytes)
+                elif len(key_bytes) == 64:
+                    logger.info(f"Creating keypair from 64-byte full keypair...")
+                    self.keypair = Keypair.from_bytes(key_bytes)
+                else:
+                    raise ValueError(f"Unexpected key length: {len(key_bytes)} bytes")
+
+                self.wallet_address = str(self.keypair.pubkey())
+                logger.info(f"Initialized wallet from hex: {self.wallet_address}")
+                return
+            except Exception as hex_error:
+                logger.error(f"Hex decode failed: {type(hex_error).__name__}: {hex_error}")
+                # Fall through to try base58
+
+        # Try base58 format
+        try:
+            logger.info(f"Attempting base58 decode for {len(private_key)}-char key...")
+            key_bytes = b58decode(private_key)
+            logger.info(f"Base58 decode successful, got {len(key_bytes)} bytes...")
+
+            # 32 bytes = seed only, use from_seed()
+            # 64 bytes = full keypair, use from_bytes()
+            if len(key_bytes) == 32:
+                logger.info(f"Creating keypair from 32-byte seed...")
+                self.keypair = Keypair.from_seed(key_bytes)
+            elif len(key_bytes) == 64:
+                logger.info(f"Creating keypair from 64-byte full keypair...")
+                self.keypair = Keypair.from_bytes(key_bytes)
+            else:
+                raise ValueError(f"Unexpected key length: {len(key_bytes)} bytes")
+
+            self.wallet_address = str(self.keypair.pubkey())
+            logger.info(f"Initialized wallet from base58: {self.wallet_address}")
         except Exception as e:
-            logger.error(f"Failed to load private key: {e}")
-            raise ValueError(f"Invalid private key format: {e}")
+            logger.error(f"Base58 decode failed: {type(e).__name__}: {e}")
+            raise ValueError(f"Invalid private key format. Must be hex (64/128 chars) or base58. Error: {e}")
 
     def get_sol_balance(self) -> Optional[int]:
         """
