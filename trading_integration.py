@@ -6,7 +6,7 @@ Multi-chain swap integration (Jupiter for Solana, 1inch for BSC)
 import logging
 import datetime
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from jupiter_swap import JupiterSwap, TOKENS as JUPITER_TOKENS, sol_to_lamports
+from jupiter_swap import JupiterSwap, TOKENS as JUPITER_TOKENS, sol_to_lamports, MIN_SOL_RESERVE
 from bsc_swap import BSCSwap, TOKENS as BSC_TOKENS, bnb_to_wei
 
 logger = logging.getLogger(__name__)
@@ -62,10 +62,73 @@ class TradingMixin:
         sol_wallet = chains['SOL']
         private_key = sol_wallet.get('private_key')
 
-        await query.edit_message_text(f"🔄 Processing buy order...\n\n💰 Amount: {sol_amount} SOL\n🪙 Token: {token_symbol}\n⚙️ Slippage: {slippage_bps/100}%\n\n⏳ Getting quote...")
+        await query.edit_message_text(f"🔄 Processing buy order...\n\n💰 Amount: {sol_amount} SOL\n🪙 Token: {token_symbol}\n⚙️ Slippage: {slippage_bps/100}%\n\n⏳ Checking balance...")
 
+        # Initialize swap handler and check balance
         swap_handler = JupiterSwap(private_key)
-        quote = swap_handler.get_quote(JUPITER_TOKENS['SOL'], token_address, sol_to_lamports(sol_amount), slippage_bps)
+        sol_balance = swap_handler.get_sol_balance()
+
+        if sol_balance is None:
+            await query.edit_message_text("❌ Failed to fetch wallet balance. Please try again.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+            return
+
+        balance_sol = sol_balance / 1e9
+        user_requested_lamports = sol_to_lamports(sol_amount)
+
+        # Calculate absolute maximum we can swap from current balance
+        absolute_max_swappable = sol_balance - MIN_SOL_RESERVE
+
+        # Check if user has enough balance
+        if sol_balance < user_requested_lamports:
+            await query.edit_message_text(
+                f"❌ <b>Insufficient Balance</b>\n\n"
+                f"💰 Your balance: <b>{balance_sol:.9f} SOL</b>\n"
+                f"💸 You requested: <b>{sol_amount} SOL</b>\n\n"
+                f"Please add more SOL to your wallet.",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+            return
+
+        # Ensure we have enough to do any swap at all
+        if absolute_max_swappable <= 1_000_000:  # Less than 0.001 SOL
+            await query.edit_message_text(
+                f"❌ <b>Balance Too Low</b>\n\n"
+                f"💰 Your balance: <b>{balance_sol:.9f} SOL</b>\n\n"
+                f"After reserving {MIN_SOL_RESERVE/1e9:.3f} SOL for fees and rent, "
+                f"there's not enough left to swap.\n\n"
+                f"Minimum balance needed: <b>0.004 SOL</b>",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+            return
+
+        # Calculate how much we'll actually swap
+        actual_swap_amount = min(user_requested_lamports - MIN_SOL_RESERVE, absolute_max_swappable)
+
+        # Final safety check
+        if actual_swap_amount <= 0:
+            await query.edit_message_text(
+                f"❌ <b>Amount Too Small</b>\n\n"
+                f"After reserving {MIN_SOL_RESERVE/1e9:.3f} SOL for fees and rent, "
+                f"there's nothing left to swap from {sol_amount} SOL.\n\n"
+                f"Please try a larger amount (min 0.004 SOL).",
+                parse_mode='HTML',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+            return
+
+        actual_swap_sol = actual_swap_amount / 1e9
+        reserve_sol = MIN_SOL_RESERVE / 1e9
+
+        await query.edit_message_text(
+            f"🔄 Processing buy order...\n\n"
+            f"💰 Input: {sol_amount} SOL\n"
+            f"📊 Swapping: ~{actual_swap_sol:.6f} SOL\n"
+            f"🔒 Reserved: {reserve_sol:.3f} SOL (fees)\n"
+            f"🪙 Token: {token_symbol}\n"
+            f"⚙️ Slippage: {slippage_bps/100}%\n\n"
+            f"⏳ Getting quote...")
+
+        quote = swap_handler.get_quote(JUPITER_TOKENS['SOL'], token_address, actual_swap_amount, slippage_bps)
 
         if not quote:
             await query.edit_message_text("❌ Failed to get quote from Jupiter. Token may have low liquidity.",
@@ -81,14 +144,19 @@ class TradingMixin:
 
         await query.edit_message_text(
             f"📊 <b>Buy Order Quote</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"💰 You Pay: <b>{in_amount:.9f} SOL</b>\n"
+            f"💰 <b>Using: {sol_amount} SOL</b>\n"
+            f"   ├─ Swap: {in_amount:.6f} SOL\n"
+            f"   └─ Reserved: {reserve_sol:.3f} SOL\n\n"
             f"🪙 You Receive: <b>~{out_amount:,.2f} {token_symbol}</b>\n"
             f"📊 Price Impact: <b>{price_impact:.4f}%</b>\n"
-            f"⚙️ Slippage: <b>{slippage_bps/100}%</b>\n\n⚠️ <b>Confirm this transaction?</b>",
+            f"⚙️ Slippage: <b>{slippage_bps/100}%</b>\n\n"
+            f"ℹ️ Reserved amount covers transaction fees and rent.\n\n"
+            f"⚠️ <b>Confirm this transaction?</b>",
             parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
 
         self.trading_context[user_id]['pending_quote'] = quote
         self.trading_context[user_id]['pending_amount'] = sol_amount
+        self.trading_context[user_id]['actual_swap_amount'] = actual_swap_amount
 
     async def _execute_buy_bsc(self, query, user_id: int, bnb_amount: float, token_address: str, token_symbol: str, slippage_bps: int, chains: dict):
         """Execute BSC token buy using 1inch"""
@@ -156,16 +224,29 @@ class TradingMixin:
 
     async def _confirm_buy_solana(self, query, user_id: int, sol_amount: float, token_address: str, token_symbol: str, context: dict):
         """Confirm and execute Solana buy"""
+        actual_swap_amount = context.get('actual_swap_amount')
+
+        if actual_swap_amount is None:
+            await query.edit_message_text("❌ Quote expired. Please try again.")
+            return
+
         user_data = self.get_user_wallet_data(user_id)
         primary_wallet = user_data.get('primary_wallet', 'wallet1')
         private_key = user_data['wallet_slots'][primary_wallet]['chains']['SOL']['private_key']
 
-        await query.edit_message_text(f"⏳ <b>Executing Swap...</b>\n\n💰 Amount: {sol_amount} SOL\n🪙 Token: {token_symbol}\n\n⏳ Please wait...", parse_mode='HTML')
+        swap_sol = actual_swap_amount / 1e9
+        await query.edit_message_text(
+            f"⏳ <b>Executing Swap...</b>\n\n"
+            f"💰 Using: {sol_amount} SOL\n"
+            f"📊 Swapping: {swap_sol:.6f} SOL\n"
+            f"🪙 Token: {token_symbol}\n\n"
+            f"⏳ Please wait...",
+            parse_mode='HTML')
 
         swap_handler = JupiterSwap(private_key)
         slippage_bps = int(context.get('slippage_pct', 10) * 100)
 
-        success = swap_handler.swap(JUPITER_TOKENS['SOL'], token_address, sol_to_lamports(sol_amount), slippage_bps, simulate=False)
+        success = swap_handler.swap(JUPITER_TOKENS['SOL'], token_address, actual_swap_amount, slippage_bps, simulate=False)
 
         if success:
             order = {'order_id': f"order_{user_id}_{int(datetime.datetime.now().timestamp())}", 'token_address': token_address,
