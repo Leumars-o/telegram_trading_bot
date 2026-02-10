@@ -1321,6 +1321,102 @@ class TradingBotModular(TradingMixin):
                     )
                 return
 
+            # Handle withdraw address input
+            elif state.get('action') == 'withdraw_address':
+                address = message_text.strip()
+                network = state['network']
+                slot_name = state['slot_name']
+
+                # Update state to amount step
+                state['action'] = 'withdraw_amount'
+                state['recipient'] = address
+                self.waiting_for_input[user_id] = state
+
+                # Get current balance
+                user_data = self.get_user_wallet_data(user_id)
+                wallet_data = user_data['wallet_slots'][slot_name]['chains'][network]
+                balance_data = await self.get_balance(network, wallet_data['address'])
+
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"📊 Current balance: {balance_data['formatted']}\n\n"
+                         f"Please send the amount to withdraw:",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("❌ Cancel", callback_data='withdraw_start')
+                    ]])
+                )
+                return
+
+            # Handle withdraw amount input
+            elif state.get('action') == 'withdraw_amount':
+                try:
+                    amount = float(message_text.strip())
+                    if amount <= 0:
+                        raise ValueError("Amount must be positive")
+
+                    network = state['network']
+                    slot_name = state['slot_name']
+                    recipient = state['recipient']
+
+                    del self.waiting_for_input[user_id]
+
+                    processing_msg = await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=f"⏳ Processing withdrawal of {amount} {CONFIG['chains'][network]['symbol']}..."
+                    )
+
+                    # Get wallet private key
+                    user_data = self.get_user_wallet_data(user_id)
+                    wallet_data = user_data['wallet_slots'][slot_name]['chains'][network]
+                    private_key = wallet_data.get('private_key', '')
+
+                    # Execute transfer based on network
+                    tx_hash = None
+                    decimals = CONFIG['chains'][network]['decimals']
+                    symbol = CONFIG['chains'][network]['symbol']
+                    explorer = CONFIG['chains'][network].get('explorer', '')
+
+                    if network == 'SOL':
+                        amount_lamports = int(amount * (10 ** decimals))
+                        tx_hash = await self.transfer_service.execute_solana_transfer(
+                            private_key, recipient, amount_lamports
+                        )
+                    elif network in ('ETH', 'BSC'):
+                        amount_wei = int(amount * (10 ** decimals))
+                        tx_hash = await self.transfer_service.execute_ethereum_transfer(
+                            private_key, recipient, amount_wei
+                        )
+
+                    if tx_hash:
+                        explorer_link = f"{explorer}{tx_hash}" if explorer else tx_hash
+                        await processing_msg.edit_text(
+                            f"✅ <b>Withdrawal Successful!</b>\n\n"
+                            f"💰 Amount: {amount} {symbol}\n"
+                            f"📤 To: <code>{recipient}</code>\n"
+                            f"🔗 TX: <a href='{explorer_link}'>{tx_hash[:16]}...</a>",
+                            parse_mode='HTML',
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("⬅️ Back", callback_data='withdraw_start')
+                            ]])
+                        )
+                    else:
+                        await processing_msg.edit_text(
+                            f"❌ Withdrawal failed. Please try again later.",
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("⬅️ Back", callback_data='withdraw_start')
+                            ]])
+                        )
+
+                except ValueError:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="❌ Invalid amount. Please enter a valid number.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("❌ Cancel", callback_data='withdraw_start')
+                        ]])
+                    )
+                return
+
             # Handle import seed phrase
             elif state.get('action') == 'import':
                 await self.import_wallet(update, context, state, message_text)
