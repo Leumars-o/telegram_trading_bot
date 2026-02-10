@@ -3,13 +3,15 @@ Transfer Service
 Handles cryptocurrency transfers between wallets
 """
 
+import base64
 import logging
 from typing import Optional, Dict, Any
 from solders.keypair import Keypair
 from solders.transaction import Transaction
 from solders.system_program import transfer, TransferParams
 from solders.pubkey import Pubkey
-from web3 import Web3
+from solders.hash import Hash
+from solders.message import Message
 import requests
 
 logger = logging.getLogger(__name__)
@@ -57,39 +59,65 @@ class TransferService:
             Transaction signature or None
         """
         try:
-            # Import Solana libraries
-            from solana.rpc.api import Client
-            from solana.transaction import Transaction as SolanaTransaction
-            from solana.system_program import TransferParams as SolanaTransferParams, transfer as solana_transfer
-            from solders.keypair import Keypair as SoldersKeypair
-            from solders.pubkey import Pubkey as SoldersPubkey
+            rpc_url = self.networks['SOL']['rpc']
 
-            # Initialize client
-            client = Client(self.networks['SOL']['rpc'])
-
-            # Load keypair
+            # Load keypair from hex private key
             private_key_bytes = bytes.fromhex(from_private_key)
-            keypair = SoldersKeypair.from_bytes(private_key_bytes[:32])
+            if len(private_key_bytes) == 32:
+                keypair = Keypair.from_seed(private_key_bytes)
+            else:
+                keypair = Keypair.from_bytes(private_key_bytes)
 
             # Create transfer instruction
-            transfer_ix = solana_transfer(
-                SolanaTransferParams(
+            transfer_ix = transfer(
+                TransferParams(
                     from_pubkey=keypair.pubkey(),
-                    to_pubkey=SoldersPubkey.from_string(to_address),
+                    to_pubkey=Pubkey.from_string(to_address),
                     lamports=amount_lamports
                 )
             )
 
-            # Create and send transaction
-            recent_blockhash = client.get_latest_blockhash().value.blockhash
-            transaction = SolanaTransaction().add(transfer_ix)
-            transaction.recent_blockhash = recent_blockhash
-            transaction.fee_payer = keypair.pubkey()
+            # Get recent blockhash via RPC
+            blockhash_resp = requests.post(rpc_url, json={
+                'jsonrpc': '2.0', 'id': 1,
+                'method': 'getLatestBlockhash',
+                'params': [{'commitment': 'confirmed'}]
+            })
+            blockhash_data = blockhash_resp.json()
+            recent_blockhash = Hash.from_string(
+                blockhash_data['result']['value']['blockhash']
+            )
 
-            # Sign and send
-            response = client.send_transaction(transaction, keypair)
-            signature = str(response.value)
+            # Build and sign transaction
+            msg = Message.new_with_blockhash(
+                [transfer_ix], keypair.pubkey(), recent_blockhash
+            )
+            tx = Transaction([keypair], msg, recent_blockhash)
 
+            # Send transaction via RPC
+            tx_bytes = bytes(tx)
+            tx_base64 = base64.b64encode(tx_bytes).decode('utf-8')
+
+            send_resp = requests.post(rpc_url, json={
+                'jsonrpc': '2.0', 'id': 1,
+                'method': 'sendTransaction',
+                'params': [
+                    tx_base64,
+                    {
+                        'encoding': 'base64',
+                        'skipPreflight': False,
+                        'preflightCommitment': 'confirmed',
+                        'maxRetries': 3
+                    }
+                ]
+            })
+            send_data = send_resp.json()
+
+            if 'error' in send_data:
+                logger.error(f"Solana RPC error: {send_data['error']}")
+                return None
+
+            signature = send_data['result']
             logger.info(f"Solana transfer successful: {signature}")
             return signature
 
@@ -115,7 +143,7 @@ class TransferService:
             Transaction hash or None
         """
         try:
-            # Initialize Web3
+            from web3 import Web3
             w3 = Web3(Web3.HTTPProvider(self.networks['ETH']['rpc']))
 
             # Get account from private key
