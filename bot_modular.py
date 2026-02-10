@@ -1388,13 +1388,21 @@ class TradingBotModular(TradingMixin):
                         )
 
                     if tx_hash:
-                        explorer_link = f"{explorer}{tx_hash}" if explorer else tx_hash
+                        if network == 'SOL':
+                            explorer_link = f"https://solscan.io/tx/{tx_hash}"
+                        elif explorer:
+                            explorer_link = f"{explorer}{tx_hash}"
+                        else:
+                            explorer_link = None
+
+                        tx_line = f"🔗 TX: <a href='{explorer_link}'>{tx_hash[:16]}...</a>" if explorer_link else f"🔗 TX: <code>{tx_hash}</code>"
                         await processing_msg.edit_text(
                             f"✅ <b>Withdrawal Successful!</b>\n\n"
                             f"💰 Amount: {amount} {symbol}\n"
                             f"📤 To: <code>{recipient}</code>\n"
-                            f"🔗 TX: <a href='{explorer_link}'>{tx_hash[:16]}...</a>",
+                            f"{tx_line}",
                             parse_mode='HTML',
+                            disable_web_page_preview=True,
                             reply_markup=InlineKeyboardMarkup([[
                                 InlineKeyboardButton("⬅️ Back", callback_data='withdraw_start')
                             ]])
